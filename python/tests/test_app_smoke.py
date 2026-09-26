@@ -18,7 +18,7 @@ class FakeClock:
         return self.moment
 
 
-BASE = datetime(2026, 9, 14, 10, 54, 50)
+BASE = datetime(2026, 9, 14, 10, 44, 50)
 
 
 class AppSmokeTests(unittest.TestCase):
@@ -92,6 +92,114 @@ class AppSmokeTests(unittest.TestCase):
         self.app.set_alert_enabled(True)
         self.assertTrue(self.app.flashing)
 
+    # ---------------------------------------------- parrilla y cambio de hora ---
+
+    def test_sequence_restarts_every_hour_with_its_program(self):
+        app = self.app
+        self.assertEqual(app.program_block.winfo_manager(), "")  # sin parrilla no se muestra
+        app.add_program(0, 10, 11, "Palabra de Vida")  # BASE es lunes
+        app.add_program(0, 11, 13, "Música del Recuerdo")
+        self.root.update_idletasks()
+        self.assertEqual(app.program_block.winfo_manager(), "grid")
+        self.assertEqual(app.program_title.cget("text"), "Palabra de Vida")
+        self.assertEqual(app.program_caption.cget("text"), "PROGRAMA  ·  10:00–11:00")
+        self.assertEqual(app.next_program_title.cget("text"), "Música del Recuerdo")
+        self.assertEqual(app.next_program_meta.cget("text"), "Hoy · 11:00–13:00")
+        self.assertIn("Palabra de Vida", self.root.title())
+        with self.assertRaises(ValueError):
+            app.add_program(0, 12, 14, "Cruce")
+
+        self.clock.moment = datetime(2026, 9, 14, 11, 0, 0, 200_000)
+        app.step(self.clock.moment)
+        self.assertEqual(app.program_start, datetime(2026, 9, 14, 11, 0, 0))
+        self.assertEqual(app.active.label, "EN AIRE")
+        self.assertEqual(app.remaining, 45 * 60 - 1)
+        self.assertEqual(app.program_title.cget("text"), "Música del Recuerdo")
+        self.assertEqual(app.start_chip.cget("text"), "11:00 hrs")
+        titles = [entry.title for entry in app.log.entries[:3]]
+        self.assertEqual(titles, ["Entrada a bloque: EN AIRE", "Programa: Música del Recuerdo", "Nueva hora"])
+
+        self.clock.moment = datetime(2026, 9, 14, 13, 5, 0)
+        app.step(self.clock.moment)
+        self.assertEqual(app.program_start, datetime(2026, 9, 14, 13, 0, 0))
+        self.assertEqual(app.program_title.cget("text"), "Sin programa asignado")
+        self.assertEqual(app.next_program_meta.cget("text"), "Lunes · 10:00–11:00")
+
+        app.toggle_fullscreen()
+        self.root.update_idletasks()
+        self.assertEqual(app.program_block.winfo_manager(), "grid")
+        app.toggle_fullscreen()
+
+        for program in list(app.programs):
+            self.assertTrue(app.delete_program(program.id))
+        self.root.update_idletasks()
+        self.assertEqual(app.program_block.winfo_manager(), "")
+        self.assertEqual(app.next_program_box.winfo_manager(), "")
+        self.assertEqual(load_preferences(self.prefs_path).programs, [])
+
+    def test_manual_start_holds_until_the_next_hour(self):
+        app = self.app
+        app.apply_start_time(10, 30)
+        app.step(datetime(2026, 9, 14, 10, 59, 59))
+        self.assertEqual(app.program_start, datetime(2026, 9, 14, 10, 30, 0))
+        app.step(datetime(2026, 9, 14, 11, 0, 0))
+        self.assertEqual(app.program_start, datetime(2026, 9, 14, 11, 0, 0))
+
+    def test_long_program_title_fits_the_stage(self):
+        app = self.app
+        app.add_program(0, 0, 24, "W" * 40)
+        app._apply_layout((1440, 900))
+        width = int(app.stage.grid_columnconfigure(0)["minsize"])
+        self.assertLessEqual(app.f["program_title"].measure(app.program_title.cget("text")), width)
+        low, _high = layout.PROGRAM_TITLE_PX[layout.MODE_NORMAL]
+        self.assertGreaterEqual(-int(app.f["program_title"].cget("size")), app.px(low))
+
+    def test_settings_program_editor(self):
+        app = self.app
+        dialog = app.open_settings()
+        self.root.update_idletasks()
+        self.assertEqual(dialog.program_day, 0)
+        self.assertEqual(dialog.program_day_title.cget("text"), "Lunes (hoy)")
+        dialog.program_start_var.set("10")
+        dialog.program_end_var.set("12")
+        dialog._add_program()
+        self.assertEqual(dialog.program_error.cget("text"), "El programa necesita un título")
+        dialog.program_title_entry.set_value("Palabra de Vida")
+        dialog._add_program()
+        self.assertEqual(dialog.program_error.cget("text"), "")
+        self.assertEqual([p.title for p in app.programs], ["Palabra de Vida"])
+        self.assertEqual((dialog.program_start_var.get(), dialog.program_end_var.get()), ("12", "13"))
+        self.assertEqual(app.program_title.cget("text"), "Palabra de Vida")
+
+        dialog.program_start_var.set("11")
+        dialog.program_title_entry.set_value("Cruce")
+        dialog._add_program()
+        self.assertIn("Palabra de Vida", dialog.program_error.cget("text"))
+
+        dialog.copy_target_var.set("Lunes a viernes")
+        dialog._copy_day()
+        self.assertEqual(len(app.programs), 5)
+        dialog.select_day(6)
+        self.assertEqual(dialog.program_day_title.cget("text"), "Domingo")
+        self.assertEqual(len(load_preferences(self.prefs_path).programs), 5)
+
+    def test_section_minutes_and_hour_warning(self):
+        app = self.app
+        dialog = app.open_settings()
+        self.root.update_idletasks()
+        self.assertEqual(dialog.overflow_label.cget("text"), "")
+        variable = dialog.minute_vars["s1"]
+        variable.set("55")
+        dialog._apply_minutes("s1", variable)
+        self.assertEqual(app.segments[0].duration, 55 * 60)
+        self.assertEqual(app.segments[0].label, "EN AIRE")
+        self.assertIn("CIERRE, CORTE", dialog.overflow_label.cget("text"))
+        self.assertEqual(load_preferences(self.prefs_path).segments[0].duration, 55 * 60)
+        variable.set("45")
+        dialog._queue_minutes("s1", variable)  # como al pulsar la flecha: espera una pausa
+        dialog.close()  # los minutos pendientes se aplican al cerrar
+        self.assertEqual(app.segments[0].duration, 45 * 60)
+
     # ------------------------------------------------------ tamaños del doc ---
 
     def test_clock_and_date_sizes_follow_document(self):
@@ -149,7 +257,7 @@ class AppSmokeTests(unittest.TestCase):
         app._apply_layout((700, 800))
         self.assertEqual(app.mode, layout.MODE_STACKED)
         self.assertIs(app.left_panel.master, app.stage)
-        self.assertEqual(int(app.left_panel.grid_info()["row"]), 5)
+        self.assertEqual(int(app.left_panel.grid_info()["row"]), 6)
         self.assertEqual(len(app._timeline_rows), 4)
         self.assertEqual(app.start_chip.cget("text"), "10:00 hrs")
         self.assertEqual(app._topbar_mode, "wrapped")

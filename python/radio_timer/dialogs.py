@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import messagebox
 from typing import TYPE_CHECKING, Callable
 
 from . import model, theme, widgets
@@ -13,6 +14,10 @@ KIND_OPTIONS = {
     "En cadena (se suma)": model.KIND_CHAIN,
     "Independiente (no se suma)": model.KIND_SEPARATE,
 }
+COPY_TARGETS: list[tuple[str, list[int]]] = [
+    ("Lunes a viernes", [0, 1, 2, 3, 4]),
+    ("Todos los días", list(range(7))),
+] + [(name, [day]) for day, name in enumerate(model.WEEKDAYS_ES)]
 
 
 class _Dialog(tk.Toplevel):
@@ -68,7 +73,7 @@ class SettingsDialog(_Dialog):
         self.scroll.pack(fill="both", expand=True)
         body = tk.Frame(self.scroll.body, bg=theme.PANEL_DARK, padx=P(28), pady=P(24))
         body.pack(fill="both", expand=True)
-        self._header(body, "CONFIGURACIÓN", "Secciones del timer")
+        self._header(body, "CONFIGURACIÓN", "Programas y secciones")
 
         # Emisora
         self._label(body, "NOMBRE DE LA EMISORA")
@@ -77,9 +82,16 @@ class SettingsDialog(_Dialog):
                                            max_length=model.MAX_STATION_LENGTH)
         self.station_entry.pack(fill="x", pady=(P(8), 0))
         self.station_var.trace_add("write", lambda *_args: app.set_station(self.station_var.get()))
+        widgets.separator(body, pady=(P(22), 0))
+
+        # Parrilla semanal
+        self._build_programs(body)
+        widgets.separator(body, pady=(P(22), 0))
 
         # Hora de inicio
-        self._label(body, "HORA DE INICIO DEL PROGRAMA", pady=(P(20), 0))
+        self._label(body, "INICIO DE LA SECUENCIA", pady=(P(20), 0))
+        widgets.label(body, "Se reinicia sola en cada hora en punto; esto solo corrige la hora actual.",
+                      font=fonts["small"], fg=theme.MUTED, wraplength=P(460), justify="left").pack(fill="x", pady=(P(4), 0))
         time_row = tk.Frame(body, bg=theme.PANEL_DARK)
         time_row.pack(fill="x", pady=(P(8), 0))
         self.hour_var = tk.StringVar(value=f"{app.start_hour:02d}")
@@ -116,6 +128,9 @@ class SettingsDialog(_Dialog):
         self._label(body, "SECCIONES ACTUALES", pady=(P(20), P(8)))
         self.list_frame = tk.Frame(body, bg=theme.PANEL_DARK)
         self.list_frame.pack(fill="x")
+        self.overflow_label = widgets.label(body, "", font=fonts["small"], fg=theme.AMBER, wraplength=P(460),
+                                            justify="left")
+        self.overflow_label.pack(fill="x", pady=(P(8), 0))
         widgets.separator(body, pady=(P(12), 0))
 
         # Interruptores
@@ -131,7 +146,64 @@ class SettingsDialog(_Dialog):
 
         widgets.button(body, "Guardar preferencias", self._save, font=fonts["button"], kind="primary",
                        pady=P(14)).pack(fill="x", pady=(P(28), 0))
+        self._minute_jobs: dict[str, str] = {}
         self.refresh()
+        self.refresh_programs()
+
+    def _build_programs(self, body: tk.Frame) -> None:
+        fonts = self.app.f
+        P = self.app.px
+        self._label(body, "PROGRAMAS POR HORA", pady=(P(20), 0))
+        widgets.label(body, "Cada día tiene su propia parrilla. El título del programa aparece sobre el reloj "
+                            "durante sus horas.", font=fonts["small"], fg=theme.MUTED, wraplength=P(460),
+                      justify="left").pack(fill="x", pady=(P(4), 0))
+
+        days = tk.Frame(body, bg=theme.PANEL_DARK)
+        days.pack(fill="x", pady=(P(12), 0))
+        self.program_day = self.app.now.weekday()
+        self.day_buttons: list[tk.Button] = []
+        for day, name in enumerate(model.WEEKDAYS_SHORT_ES):
+            days.columnconfigure(day, weight=1, uniform="days")
+            button = widgets.button(days, name, lambda d=day: self.select_day(d), font=fonts["button"],
+                                    padx=P(4), pady=P(8))
+            button.grid(row=0, column=day, sticky="ew", padx=(0 if day == 0 else P(4), 0))
+            self.day_buttons.append(button)
+
+        self.program_day_title = widgets.label(body, "", font=fonts["body_bold"], fg="#dbeae8")
+        self.program_day_title.pack(fill="x", pady=(P(14), P(4)))
+        self.program_list = tk.Frame(body, bg=theme.PANEL_DARK)
+        self.program_list.pack(fill="x")
+
+        new_row = tk.Frame(body, bg=theme.PANEL_DARK)
+        new_row.pack(fill="x", pady=(P(14), 0))
+        self.program_start_var = tk.StringVar(value="06")
+        self.program_end_var = tk.StringVar(value="07")
+        self._field(new_row, "Desde", self.program_start_var, 0, 23, fmt="%02.0f")
+        widgets.label(new_row, "–", font=fonts["dialog_title"], fg=theme.MUTED).pack(side="left", padx=P(8), pady=(P(14), 0))
+        self._field(new_row, "Hasta", self.program_end_var, 1, 24, fmt="%02.0f")
+        widgets.label(new_row, "Horas en punto, 00 a 24", font=fonts["small"], fg=theme.DIM, wraplength=P(170),
+                      justify="left").pack(side="left", padx=(P(14), 0), pady=(P(18), 0))
+        self.program_title_entry = widgets.PlaceholderEntry(body, "Título (ej: Buenos Días Luz)", font=fonts["field"],
+                                                            max_length=model.MAX_PROGRAM_TITLE_LENGTH)
+        self.program_title_entry.pack(fill="x", pady=(P(10), 0))
+        self.program_title_entry.bind("<Return>", lambda _event: self._add_program())
+        self.program_error = widgets.label(body, "", font=fonts["small"], fg=theme.DANGER, wraplength=P(460),
+                                           justify="left")
+        self.program_error.pack(fill="x", pady=(P(6), 0))
+        self.add_program_button = widgets.button(body, "", self._add_program, font=fonts["button"], kind="primary",
+                                                 pady=P(12))
+        self.add_program_button.pack(fill="x", pady=(P(4), 0))
+
+        copy_row = tk.Frame(body, bg=theme.PANEL_DARK)
+        copy_row.pack(fill="x", pady=(P(14), 0))
+        widgets.label(copy_row, "Copiar este día a", font=fonts["small"], fg="#83a3a3").pack(side="left")
+        self.copy_target_var = tk.StringVar(value=COPY_TARGETS[0][0])
+        widgets.option_menu(copy_row, self.copy_target_var, [name for name, _ in COPY_TARGETS],
+                            font=fonts["small"]).pack(side="left", fill="x", expand=True, padx=(P(10), P(10)))
+        widgets.button(copy_row, "Copiar", self._copy_day, font=fonts["small"], padx=P(14), pady=P(6)).pack(side="right")
+        widgets.label(body, "Un programa que pasa la medianoche se carga en dos partes: por ejemplo 22–24 el lunes "
+                            "y 00–02 el martes.", font=fonts["small"], fg=theme.DIM, wraplength=P(460),
+                      justify="left").pack(fill="x", pady=(P(10), 0))
 
     # ------------------------------------------------------------ helpers ---
 
@@ -182,6 +254,108 @@ class SettingsDialog(_Dialog):
         self.app.save_preferences()
         self.close()
 
+    def select_day(self, day: int) -> None:
+        self.program_day = day
+        self.program_error.configure(text="")
+        self.refresh_programs()
+
+    def _add_program(self) -> None:
+        try:
+            program = self.app.add_program(self.program_day, self.program_start_var.get(),
+                                           self.program_end_var.get(), self.program_title_entry.value())
+        except ValueError as exc:
+            self.program_error.configure(text=str(exc))
+            return
+        self.program_error.configure(text="")
+        self.program_title_entry.clear()
+        # Lo más común es cargar el programa siguiente a continuación.
+        self.program_start_var.set(f"{min(program.end, 23):02d}")
+        self.program_end_var.set(f"{min(program.end + 1, 24):02d}")
+
+    def _copy_day(self) -> None:
+        targets = dict(COPY_TARGETS)[self.copy_target_var.get()]
+        targets = [day for day in targets if day != self.program_day]
+        if not targets:
+            return
+        replaced = [day for day in targets if model.programs_for_day(self.app.programs, day)]
+        if replaced:
+            names = ", ".join(model.WEEKDAYS_ES[day] for day in replaced)
+            if not messagebox.askyesno("Copiar parrilla",
+                                       f"Se reemplazarán los programas de: {names}.\n¿Continuar?", parent=self):
+                return
+        self.app.copy_program_day(self.program_day, targets)
+
+    def refresh_programs(self) -> None:
+        P = self.app.px
+        fonts = self.app.f
+        today = self.app.now.weekday()
+        for day, button in enumerate(self.day_buttons):
+            selected = day == self.program_day
+            has_programs = bool(model.programs_for_day(self.app.programs, day))
+            button.configure(bg=theme.PRIMARY if selected else theme.BUTTON_BG,
+                             fg=theme.PRIMARY_TEXT if selected else (theme.TEXT_SOFT if has_programs else theme.DIM),
+                             activebackground=theme.PRIMARY_ACTIVE if selected else theme.BUTTON_ACTIVE)
+        name = model.WEEKDAYS_ES[self.program_day]
+        self.program_day_title.configure(text=f"{name}{' (hoy)' if self.program_day == today else ''}")
+        self.add_program_button.configure(text=f"+   Agregar programa al {name.lower()}")
+        for child in self.program_list.winfo_children():
+            child.destroy()
+        programs = model.programs_for_day(self.app.programs, self.program_day)
+        if not programs:
+            widgets.label(self.program_list, "Sin programas este día.", font=fonts["small"], fg=theme.DIM,
+                          anchor="center").pack(fill="x", pady=P(10))
+        current_id = self.app.program.id if self.app.program else None
+        for program in programs:
+            on_air = program.id == current_id
+            bg = theme.ROW_ACTIVE if on_air else theme.PANEL_DARK
+            row = tk.Frame(self.program_list, bg=bg, padx=P(8), pady=P(8))
+            row.pack(fill="x")
+            widgets.label(row, program.hours_label, font=fonts["mono_small"],
+                          fg=theme.GREEN if on_air else "#a9c4c3").pack(side="left", padx=(0, P(12)))
+            widgets.label(row, program.title, font=fonts["body_bold"], fg=theme.TEXT_SOFT,
+                          wraplength=P(250), justify="left").pack(side="left", fill="x", expand=True)
+            widgets.button(row, "Eliminar", lambda pid=program.id: self.app.delete_program(pid),
+                           font=fonts["small"], kind="danger", padx=P(12), pady=P(6)).pack(side="right")
+            tk.Frame(self.program_list, bg="#152a2e", height=1).pack(fill="x")
+
+    def _queue_minutes(self, segment_id: str, variable: tk.StringVar, delay: int = 500) -> None:
+        """Aplica los minutos tras una pausa, para no recalcular con cada flecha o tecla."""
+        job = self._minute_jobs.pop(segment_id, None)
+        if job is not None:
+            self.after_cancel(job)
+        self._minute_jobs[segment_id] = self.after(delay, lambda: self._apply_minutes(segment_id, variable))
+
+    def _apply_minutes(self, segment_id: str, variable: tk.StringVar) -> None:
+        self._minute_jobs.pop(segment_id, None)
+        segment = self.app.set_segment_minutes(segment_id, variable.get())
+        if not self.winfo_exists():
+            return
+        if segment is not None:
+            variable.set(str(segment.duration // 60))
+        self._refresh_overflow()
+
+    def close(self) -> None:
+        # Minutos escritos que aún esperaban su pausa: se aplican antes de cerrar.
+        for segment_id, job in list(self._minute_jobs.items()):
+            self.after_cancel(job)
+            variable = self.minute_vars.get(segment_id)
+            if variable is not None:
+                self._minute_jobs.pop(segment_id, None)
+                self.app.set_segment_minutes(segment_id, variable.get())
+        super().close()
+
+    def _refresh_overflow(self) -> None:
+        cut = model.cut_by_hour(self.app.segments)
+        if cut:
+            total = model.sequence_duration(self.app.segments) // 60
+            names = ", ".join(segment.label for segment in cut)
+            self.overflow_label.configure(
+                text=f"La secuencia dura {total} min y se reinicia en cada hora en punto: {names} "
+                     f"{'no alcanzan a salir completas' if len(cut) > 1 else 'no alcanza a salir completa'}. "
+                     f"Ajusta los minutos para que sumen 60.")
+        else:
+            self.overflow_label.configure(text="")
+
     def refresh(self) -> None:
         P = self.app.px
         for child in self.list_frame.winfo_children():
@@ -190,6 +364,7 @@ class SettingsDialog(_Dialog):
         if not self.app.segments:
             widgets.label(self.list_frame, "Sin secciones. Agrega una arriba.", font=fonts["small"],
                           fg=theme.DIM, anchor="center").pack(fill="x", pady=P(14))
+        self.minute_vars: dict[str, tk.StringVar] = {}
         for segment in self.app.segments:
             row = tk.Frame(self.list_frame, bg=theme.PANEL_DARK, pady=P(10))
             row.pack(fill="x")
@@ -197,11 +372,19 @@ class SettingsDialog(_Dialog):
             copy = tk.Frame(row, bg=theme.PANEL_DARK)
             copy.pack(side="left", fill="x", expand=True)
             widgets.label(copy, segment.label, font=fonts["body_bold"], fg=theme.TEXT_SOFT).pack(anchor="w")
-            widgets.label(copy, f"{model.format_duration(segment.duration)} · {segment.kind_name}",
-                          font=fonts["small"], fg=theme.DIM).pack(anchor="w")
+            widgets.label(copy, segment.kind_name, font=fonts["small"], fg=theme.DIM).pack(anchor="w")
             widgets.button(row, "Eliminar", lambda sid=segment.id: self.app.delete_segment(sid),
                            font=fonts["small"], kind="danger", padx=P(12), pady=P(6)).pack(side="right")
+            widgets.label(row, "min", font=fonts["small"], fg=theme.DIM).pack(side="right", padx=(P(6), P(14)))
+            minutes = tk.StringVar(value=str(segment.duration // 60))
+            spin = widgets.spinbox(row, minutes, font=fonts["body"], low=1, high=model.MAX_SEGMENT_MINUTES, width=4)
+            spin.configure(wrap=False, command=lambda sid=segment.id, var=minutes: self._queue_minutes(sid, var))
+            spin.bind("<Return>", lambda _event, sid=segment.id, var=minutes: self._queue_minutes(sid, var, 0))
+            spin.bind("<FocusOut>", lambda _event, sid=segment.id, var=minutes: self._queue_minutes(sid, var, 0))
+            spin.pack(side="right")
+            self.minute_vars[segment.id] = minutes
             tk.Frame(self.list_frame, bg="#152a2e", height=1).pack(fill="x")
+        self._refresh_overflow()
 
 
 class HistoryDialog(_Dialog):

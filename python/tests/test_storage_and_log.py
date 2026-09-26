@@ -28,6 +28,24 @@ class StorageTests(unittest.TestCase):
         self.assertEqual([s.label for s in loaded.segments], ["EN AIRE", "PROMOS", "CIERRE", "CORTE", "PRUEBA"])
         self.assertEqual(loaded.segments[-1].duration, 180)
 
+    def test_programs_round_trip_and_bad_entries_are_skipped(self):
+        prefs = Preferences(programs=[model.new_program(0, 6, 9, "Buenos Días Luz"),
+                                      model.new_program(5, 20, 24, "Sábado de Gloria")])
+        save_preferences(prefs, self.path)
+        self.assertEqual(load_preferences(self.path).programs, prefs.programs)
+
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data["programs"].append({"id": "roto", "day": 9, "start": 1, "end": 2, "title": "X"})
+        data["programs"].append("basura")
+        self.path.write_text(json.dumps(data), encoding="utf-8")
+        self.assertEqual([p.title for p in load_preferences(self.path).programs],
+                         ["Buenos Días Luz", "Sábado de Gloria"])
+
+    def test_old_file_without_programs(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps({"station": "Radio X"}), encoding="utf-8")
+        self.assertEqual(load_preferences(self.path).programs, [])
+
     def test_missing_file_gives_defaults(self):
         prefs = load_preferences(self.path)
         self.assertEqual(prefs.station, "Radio Luz 93.7 FM")

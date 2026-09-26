@@ -1,0 +1,47 @@
+{
+  "station_name": "Radio Luz 93.7 fm - Timer",
+  "timezone": "America/Santo_Domingo",
+  "secondary_tz": "America/Santo_Domingo",
+  "compact_height": 70,
+  "expanded_height": 848,
+  "window_width": 1381,
+  "window_x": 349,
+  "window_y": 98,
+  "opacity": 0.95,
+  "blink_enabled": true,
+  "blink_seconds": 15,
+  "log_enabled": true,
+  "fullscreen": false,
+  "schedules": {
+    "default": [
+      {
+        "minute_start": 0,
+        "minute_end": 55,
+        "color": "#1a7a3c",
+        "fg": "#ffffff",
+        "name": "EN AIRE / PROGRAMA"
+      },
+      {
+        "minute_start": 50,
+        "minute_end": 55,
+        "color": "#2563eb",
+        "fg": "#ffffff",
+        "name": "CIERRE DE BLOQUE"
+      },
+      {
+        "minute_start": 55,
+        "minute_end": 60,
+        "color": "#d97706",
+        "fg": "#ffffff",
+        "name": "PROMO / AVANCES"
+      },
+      {
+        "minute_start": 55,
+        "minute_end": 60,
+        "color": "#dc2626",
+        "fg": "#ffffff",
+        "name": "CORTE COMERCIAL"
+      }
+    ]
+  }
+}

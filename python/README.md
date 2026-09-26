@@ -17,7 +17,8 @@ python run.py
 La ventana abre maximizada. Opciones:
 
 ```
-python run.py --hora 10:54:50      # simula que el reloj arranca a esa hora (para probar la alerta)
+python run.py --hora 10:44:50      # simula que el reloj arranca a esa hora (para probar la alerta)
+python run.py --hora 10:59:55      # ver el cambio de hora y de programa
 python run.py --compacto           # inicia en modo compacto
 python run.py --pantalla-completa  # inicia en pantalla completa
 python run.py --ventana            # abre sin maximizar
@@ -36,13 +37,15 @@ python run.py --prefs otro.json    # usa otro archivo de preferencias
 - El contador no se inicia ni decrementa a mano: cada sección tiene hora de inicio y fin calculadas desde la hora de inicio del programa, y el tiempo restante sale de compararlas con el reloj del sistema.
 - Al llegar a 00:00 pasa sola a la siguiente sección. Las secciones **en cadena** suman al total; las **independientes** tienen su propio contador en el panel derecho, que solo avanza en su turno.
 - En los últimos 10 segundos el reloj parpadea en rojo y el anillo brilla con un halo pulsante (se puede apagar en Configuración).
-- La hora de inicio se ajusta en Configuración; el botón **Reiniciar al inicio** reprograma toda la secuencia desde esa hora.
+- En cada hora en punto la secuencia vuelve a empezar sola desde la primera sección (como el `timecon.exe` original). Por eso las secciones por defecto suman 60 minutos (45/5/5/5); si suman más, Configuración avisa qué secciones no alcanzan a salir.
+- **Programas por hora:** cada día de la semana tiene su parrilla (rangos de horas en punto con un título). El título del programa en curso aparece sobre el reloj y el siguiente en el panel izquierdo. Se carga en Configuración → Programas por hora; "Copiar este día a" copia la parrilla a otros días.
+- La hora de inicio se ajusta en Configuración y vale hasta la próxima hora en punto; el botón **Reiniciar al inicio** reprograma toda la secuencia desde esa hora.
 - El historial registra entradas a bloque, reinicios, pánico y cambios de configuración, y se exporta a CSV compatible con Excel.
 - Si hay más secciones de las que caben, los paneles muestran una barra de desplazamiento y responden a la rueda del ratón.
 
 ## Preferencias
 
-Emisora, secciones e interruptores se guardan en `%APPDATA%\RadioTimer\prefs.json` (en Linux/macOS, `~/.config/RadioTimer/prefs.json`).
+Emisora, secciones, parrilla de programas e interruptores se guardan en `%APPDATA%\RadioTimer\prefs.json` (en Linux/macOS, `~/.config/RadioTimer/prefs.json`).
 La hora de inicio vuelve a la hora en punto actual cada vez que se abre la aplicación.
 
 ## Pruebas
@@ -60,7 +63,7 @@ Las pruebas de interfaz (`test_app_smoke.py`) necesitan un entorno con pantalla;
 Abrir Radio Timer.bat  lanzador con doble clic
 run.py                 arranque desde la terminal
 radio_timer/
-  model.py             lógica pura: secciones, programación, formato
+  model.py             lógica pura: secciones, parrilla de programas, formato
   layout.py            tamaños del reloj, la fecha y los paneles
   storage.py           preferencias en JSON
   activity_log.py      historial y exportación CSV

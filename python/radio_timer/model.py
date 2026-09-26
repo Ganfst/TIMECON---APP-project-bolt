@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
@@ -20,9 +20,11 @@ KIND_LABELS = {KIND_CHAIN: "EN CADENA", KIND_SEPARATE: "INDEPENDIENTE"}
 KIND_NAMES = {KIND_CHAIN: "En cadena", KIND_SEPARATE: "Independiente"}
 
 FLASH_WINDOW_SECONDS = 10
+HOUR_SECONDS = 60 * 60
 MAX_SEGMENT_MINUTES = 24 * 60
 MAX_LABEL_LENGTH = 24
 MAX_STATION_LENGTH = 40
+MAX_PROGRAM_TITLE_LENGTH = 40
 DEFAULT_STATION_FALLBACK = "Radio"
 
 PALETTE: tuple[tuple[str, str], ...] = (
@@ -36,6 +38,7 @@ PALETTE: tuple[tuple[str, str], ...] = (
 )
 
 WEEKDAYS_ES = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
+WEEKDAYS_SHORT_ES = ("Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom")
 MONTHS_ES = (
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
@@ -101,9 +104,9 @@ class Segment:
 
 
 def default_segments() -> list[Segment]:
-    """Los cuatro bloques por hora de referencia."""
+    """Los cuatro bloques por hora de referencia; suman 60 minutos porque la secuencia se reinicia cada hora."""
     return [
-        Segment("s1", "EN AIRE", "Programa en vivo", 55 * 60, "#0e8f88", "#f1fffc", KIND_CHAIN),
+        Segment("s1", "EN AIRE", "Programa en vivo", 45 * 60, "#0e8f88", "#f1fffc", KIND_CHAIN),
         Segment("s2", "PROMOS", "Avances y menciones", 5 * 60, "#ec8d2d", "#fffaf1", KIND_CHAIN),
         Segment("s3", "CIERRE", "Cierre de bloque", 5 * 60, "#238ac2", "#f1f9ff", KIND_CHAIN),
         Segment("s4", "CORTE", "Corte comercial", 5 * 60, "#d34c62", "#fff4f5", KIND_SEPARATE),
@@ -231,6 +234,26 @@ def chain_duration(segments: Sequence[Segment]) -> int:
     return sum(segment.duration for segment in segments if segment.is_chain)
 
 
+def sequence_duration(segments: Sequence[Segment]) -> int:
+    """Duración de toda la secuencia, en cadena e independientes (cada una espera su turno)."""
+    return sum(segment.duration for segment in segments)
+
+
+def cut_by_hour(segments: Sequence[Segment]) -> list[Segment]:
+    """Secciones que no terminan antes de la siguiente hora en punto si la secuencia arranca a las HH:00."""
+    cut = []
+    elapsed = 0
+    for segment in segments:
+        elapsed += segment.duration
+        if elapsed > HOUR_SECONDS:
+            cut.append(segment)
+    return cut
+
+
+def with_minutes(segment: Segment, minutes: object) -> Segment:
+    return replace(segment, duration=clamp_int(minutes, 1, MAX_SEGMENT_MINUTES) * 60)
+
+
 def is_flashing(remaining: int, alert_enabled: bool = True) -> bool:
     return alert_enabled and 0 < remaining <= FLASH_WINDOW_SECONDS
 
@@ -265,6 +288,119 @@ def new_segment(label: str, minutes: int, kind: str, index: int) -> Segment:
     color, text = PALETTE[index % len(PALETTE)]
     detail = "Sección en cadena" if kind == KIND_CHAIN else "Sección independiente"
     return Segment(new_id(), clean_label, detail, minutes * 60, color, text, kind)
+
+
+# ------------------------------------------------------ parrilla semanal ---
+
+@dataclass(frozen=True)
+class Program:
+    """Un programa de la parrilla: un día de la semana y un rango de horas en punto."""
+
+    id: str
+    day: int     # 0 = lunes … 6 = domingo
+    start: int   # hora de inicio, 0 a 23
+    end: int     # hora de fin (no incluida), 1 a 24
+    title: str
+
+    @property
+    def hours_label(self) -> str:
+        return f"{format_hour(self.start)}–{format_hour(self.end)}"
+
+    def contains(self, moment: datetime) -> bool:
+        return moment.weekday() == self.day and self.start <= moment.hour < self.end
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "day": self.day, "start": self.start, "end": self.end, "title": self.title}
+
+    @classmethod
+    def from_dict(cls, data: object) -> "Program":
+        if not isinstance(data, dict):
+            raise ValueError(f"programa inválido: {data!r}")
+        try:
+            program = cls(
+                id=str(data["id"]),
+                day=int(data["day"]),
+                start=int(data["start"]),
+                end=int(data["end"]),
+                title=clean_program_title(data["title"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"programa inválido: {data!r}") from exc
+        if not (0 <= program.day <= 6 and 0 <= program.start < program.end <= 24 and program.title):
+            raise ValueError(f"programa inválido: {data!r}")
+        return program
+
+
+def format_hour(hour: int) -> str:
+    return f"{hour:02d}:00"
+
+
+def clean_program_title(title: object) -> str:
+    return " ".join(str(title).split())[:MAX_PROGRAM_TITLE_LENGTH].strip()
+
+
+def new_program(day: object, start: object, end: object, title: str) -> Program:
+    clean_title = clean_program_title(title)
+    if not clean_title:
+        raise ValueError("El programa necesita un título")
+    start_hour = clamp_int(start, 0, 23)
+    end_hour = clamp_int(end, 1, 24)
+    if end_hour <= start_hour:
+        raise ValueError("La hora de fin debe ser posterior a la de inicio")
+    return Program(f"prog-{secrets.token_hex(4)}", clamp_int(day, 0, 6), start_hour, end_hour, clean_title)
+
+
+def overlapping_program(programs: Sequence[Program], candidate: Program) -> Program | None:
+    """El primer programa del mismo día cuyo horario se cruza con `candidate`."""
+    for program in programs:
+        if (program.id != candidate.id and program.day == candidate.day
+                and program.start < candidate.end and candidate.start < program.end):
+            return program
+    return None
+
+
+def programs_for_day(programs: Sequence[Program], day: int) -> list[Program]:
+    return sorted((program for program in programs if program.day == day), key=lambda program: program.start)
+
+
+def program_at(programs: Sequence[Program], moment: datetime) -> Program | None:
+    for program in programs:
+        if program.contains(moment):
+            return program
+    return None
+
+
+def next_program(programs: Sequence[Program], moment: datetime) -> tuple[Program, datetime] | None:
+    """El siguiente programa distinto al actual y la hora en que empieza (busca hasta una semana adelante)."""
+    current = program_at(programs, moment)
+    midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+    for offset in range(8):
+        day_start = midnight + timedelta(days=offset)
+        for program in programs_for_day(programs, day_start.weekday()):
+            begins = day_start + timedelta(hours=program.start)
+            if begins > moment and (current is None or program.id != current.id):
+                return program, begins
+    return None
+
+
+def copy_day(programs: Sequence[Program], source_day: int, target_days: Sequence[int]) -> list[Program]:
+    """Reemplaza los programas de `target_days` por una copia de los de `source_day`."""
+    targets = {day for day in target_days if day != source_day}
+    result = [program for program in programs if program.day not in targets]
+    for day in sorted(targets):
+        for program in programs_for_day(programs, source_day):
+            result.append(Program(f"prog-{secrets.token_hex(4)}", day, program.start, program.end, program.title))
+    return result
+
+
+def format_relative_day(moment: datetime, now: datetime) -> str:
+    """'Hoy', 'Mañana' o el nombre del día."""
+    days = (moment.date() - now.date()).days
+    if days == 0:
+        return "Hoy"
+    if days == 1:
+        return "Mañana"
+    return format_weekday_es(moment)
 
 
 # ---------------------------------------------------------------- formato ---

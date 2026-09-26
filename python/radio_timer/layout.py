@@ -32,6 +32,13 @@ RING_RANGE = {
 CLOCK_LABEL_PX = {MODE_NORMAL: 14, MODE_STACKED: 14, MODE_COMPACT: 16, MODE_FULLSCREEN: 18}
 CLOCK_SUB_PX = {MODE_NORMAL: 16, MODE_STACKED: 16, MODE_COMPACT: 20, MODE_FULLSCREEN: 22}
 FOOTER_PX = {False: (14, 14), True: (16, 18)}  # (indicador EN AIRE, emisora) según pantalla completa
+# Título del programa de la hora: (mínimo, máximo); se reduce hasta el mínimo si no cabe a lo ancho.
+PROGRAM_TITLE_PX = {
+    MODE_NORMAL: (22, 36),
+    MODE_STACKED: (20, 32),
+    MODE_COMPACT: (22, 36),
+    MODE_FULLSCREEN: (28, 56),
+}
 
 
 def clamp(value: float, low: float, high: float) -> float:

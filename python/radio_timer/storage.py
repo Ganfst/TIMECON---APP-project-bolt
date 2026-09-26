@@ -1,4 +1,4 @@
-"""Preferencias persistentes (emisora, secciones e interruptores) en un archivo JSON."""
+"""Preferencias persistentes (emisora, secciones, programas e interruptores) en un archivo JSON."""
 from __future__ import annotations
 
 import json
@@ -7,7 +7,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .model import Segment, default_segments
+from .model import Program, Segment, default_segments
 
 APP_FOLDER = "RadioTimer"
 FILE_NAME = "prefs.json"
@@ -18,6 +18,7 @@ DEFAULT_STATION = "Radio Luz 93.7 FM"
 class Preferences:
     station: str = DEFAULT_STATION
     segments: list[Segment] = field(default_factory=default_segments)
+    programs: list[Program] = field(default_factory=list)
     alert_enabled: bool = True
     sound_enabled: bool = False
 
@@ -25,6 +26,7 @@ class Preferences:
         return {
             "station": self.station,
             "segments": [segment.to_dict() for segment in self.segments],
+            "programs": [program.to_dict() for program in self.programs],
             "alertEnabled": self.alert_enabled,
             "soundEnabled": self.sound_enabled,
         }
@@ -44,6 +46,13 @@ class Preferences:
                 prefs.segments = [Segment.from_dict(item) for item in raw_segments]
             except ValueError:
                 pass  # se conservan las secciones por defecto
+        raw_programs = data.get("programs")
+        if isinstance(raw_programs, list):
+            for item in raw_programs:
+                try:
+                    prefs.programs.append(Program.from_dict(item))
+                except ValueError:
+                    pass  # un programa dañado no borra el resto de la parrilla
         if isinstance(data.get("alertEnabled"), bool):
             prefs.alert_enabled = data["alertEnabled"]
         if isinstance(data.get("soundEnabled"), bool):

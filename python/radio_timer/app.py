@@ -5,7 +5,7 @@ import math
 import sys
 import threading
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog
 from tkinter import font as tkfont
@@ -54,6 +54,7 @@ FONT_SPECS: dict[str, tuple] = {
     "clock_long": ("mono", 80, "normal"),
     "clock_label": ("sans", 14, "normal"),
     "clock_sub": ("sans", 16, "bold"),
+    "program_title": ("sans", 36, "bold"),
     "active_caption": ("sans", 13, "bold"),
     "active_title": ("sans", 24, "bold"),
     "active_detail": ("sans", 15, "normal"),
@@ -104,6 +105,7 @@ class RadioTimerApp:
         prefs = preferences or load_preferences(self.prefs_path)
         self.station = model.clean_station(prefs.station)
         self.segments: list[model.Segment] = list(prefs.segments)
+        self.programs: list[model.Program] = list(prefs.programs)
         self.alert_enabled = prefs.alert_enabled
         self.sound_enabled = prefs.sound_enabled
 
@@ -112,6 +114,11 @@ class RadioTimerApp:
         self.program_start = model.top_of_hour(now)
         self.start_hour = self.program_start.hour
         self.start_minute = 0
+        # La secuencia vuelve a empezar sola en cada hora en punto; esta es la hora que se está cubriendo.
+        self._hour_anchor = self.program_start
+        self.program: model.Program | None = None
+        self.upcoming: tuple[model.Program, datetime] | None = None
+        self._program_hour: datetime | None = None
 
         self.log = ActivityLog(listener=self._on_log_changed)
         self.compact = start_compact
@@ -134,6 +141,7 @@ class RadioTimerApp:
         self.left_panel: tk.Frame | None = None
         self.left_scroll: widgets.ScrollFrame | None = None
         self._previous_active_id: object = _UNSET
+        self._previous_program_id: object = _UNSET
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
         self._timeline_rows: list[dict] = []
@@ -357,13 +365,23 @@ class RadioTimerApp:
         self.zone_label = widgets.label(meta, "", font=self.f["status"], fg=theme.MUTED, anchor="e")
         self.zone_label.pack(side="right")
 
+        # Programa de la hora según la parrilla semanal.
+        program = tk.Frame(stage, bg=theme.BG)
+        self._grid_stage_row(program, 1, 0, P(14))
+        self.program_block = program
+        self.program_caption = widgets.label(program, "PROGRAMA", font=self.f["caption"], fg=theme.MUTED,
+                                             anchor="center")
+        self.program_caption.pack(fill="x")
+        self.program_title = widgets.label(program, "", font=self.f["program_title"], fg=theme.TEXT, anchor="center")
+        self.program_title.pack(fill="x", pady=(P(2), 0))
+
         self.clock_canvas = tk.Canvas(stage, width=self.ring_size, height=self.ring_size, bg=theme.BG,
                                       highlightthickness=0, bd=0)
-        self.clock_canvas.grid(row=1, column=0)
+        self.clock_canvas.grid(row=2, column=0)
         self._create_clock_items()
 
         block = tk.Frame(stage, bg=theme.ACCENT_DEFAULT, padx=P(26), pady=P(16))
-        self._grid_stage_row(block, 2, P(22))
+        self._grid_stage_row(block, 3, P(22))
         self.active_block = block
         top = tk.Frame(block, bg=theme.ACCENT_DEFAULT)
         top.pack(fill="x")
@@ -387,7 +405,7 @@ class RadioTimerApp:
                                self.active_range, self.active_remaining]
 
         reset = tk.Frame(stage, bg=theme.BG)
-        self._grid_stage_row(reset, 3, P(18))
+        self._grid_stage_row(reset, 4, P(18))
         self.reset_bar = reset
         self.reset_button = widgets.button(reset, "↺   Reiniciar al inicio", self.reset_program,
                                            font=self.f["reset"], padx=P(24), pady=P(12))
@@ -399,7 +417,7 @@ class RadioTimerApp:
         self.total_label.pack(anchor="e")
 
         dt = tk.Frame(stage, bg=theme.PANEL, padx=P(20), pady=P(12), highlightthickness=1, highlightbackground=theme.LINE)
-        self._grid_stage_row(dt, 4, P(20))
+        self._grid_stage_row(dt, 5, P(20))
         self.datetime_block = dt
         self.dt_weekday = widgets.label(dt, "", font=self.f["dt_weekday"], fg="#9ab8b8", anchor="center")
         self.dt_weekday.pack(fill="x")
@@ -502,7 +520,7 @@ class RadioTimerApp:
             self.left_panel.destroy()
         if self.mode == layout.MODE_STACKED:
             panel = tk.Frame(self.stage, bg=theme.PANEL, highlightthickness=1, highlightbackground=theme.LINE)
-            panel.grid(row=5, column=0, sticky="ew", pady=(P(26), 0))
+            panel.grid(row=6, column=0, sticky="ew", pady=(P(26), 0))
             self.left_scroll = None
             host: tk.Misc = panel
         else:
@@ -516,7 +534,7 @@ class RadioTimerApp:
         body = tk.Frame(host, bg=theme.PANEL, padx=P(20), pady=P(20))
         body.pack(fill="x")
         self._heading(body, "PROGRAMACIÓN", pady=(0, P(4)))
-        self.start_chip = self._chip(body, "INICIO DEL PROGRAMA")
+        self.start_chip = self._chip(body, "INICIO DE SECUENCIA")
         self.chain_chip = self._chip(body, "CADENA TOTAL")
         self.timeline = tk.Frame(body, bg=theme.PANEL)
         self.timeline.pack(fill="x", pady=(P(12), 0))
@@ -528,6 +546,14 @@ class RadioTimerApp:
         self.next_title.pack(anchor="w", pady=(P(6), 0))
         self.next_meta = widgets.label(self.next_box, "", font=self.f["small"], fg=theme.DIM)
         self.next_meta.pack(anchor="w", pady=(P(4), 0))
+        self.next_program_box = tk.Frame(body, bg=theme.PANEL_DARK, padx=P(16), pady=P(14))
+        self.next_program_box.pack(fill="x", pady=(P(12), 0))
+        widgets.label(self.next_program_box, "PROGRAMA SIGUIENTE", font=self.f["caption"], fg=theme.MUTED).pack(anchor="w")
+        self.next_program_title = widgets.label(self.next_program_box, "", font=self.f["next_label"], fg=theme.TEXT_SOFT,
+                                                justify="left", wraplength=self._left_text_width() + P(60))
+        self.next_program_title.pack(anchor="w", pady=(P(6), 0))
+        self.next_program_meta = widgets.label(self.next_program_box, "", font=self.f["small"], fg=theme.DIM)
+        self.next_program_meta.pack(anchor="w", pady=(P(4), 0))
         self._rebuild_timeline()
         self._dirty = True
 
@@ -676,6 +702,19 @@ class RadioTimerApp:
             long_size -= 2
             self._set_font_px("clock_long", long_size)
 
+    def _fit_program_title(self, stage_w: int) -> None:
+        """Título del programa en una línea: se achica hasta el mínimo del modo y, si aún no cabe, se recorta."""
+        text = self.program.title if self.program is not None else "Sin programa asignado"
+        low, high = layout.PROGRAM_TITLE_PX[self.mode]
+        limit = max(self.px(120), stage_w - self.px(16))
+        size = self.px(high)
+        self._set_font_px("program_title", size)
+        while size > self.px(low) and self.f["program_title"].measure(text) > limit:
+            size -= 2
+            self._set_font_px("program_title", size)
+        self.program_title.configure(text=self._fit_text("program_title", text, limit),
+                                     fg=theme.TEXT if self.program is not None else theme.DIM)
+
     # --------------------------------------------------------- disposición ---
 
     def _maximize(self) -> None:
@@ -749,6 +788,7 @@ class RadioTimerApp:
             (self.left_panel, not minimal),
             (self.right_panel, layout.show_right_panel(mode, width, self.scale)),
             (self.stage_meta, not minimal),
+            (self.program_block, bool(self.programs)),
             (self.active_block, not minimal and self.active is not None),
             (self.reset_bar, not minimal),
             (self.datetime_block, not self.compact),
@@ -782,7 +822,7 @@ class RadioTimerApp:
         return max(1, width - side), max(1, height - used_h)
 
     def _stage_reserved_height(self) -> int:
-        rows = [self.stage_meta]
+        rows = [self.stage_meta, self.program_block]
         if self.mode != layout.MODE_STACKED:
             rows += [self.active_block, self.reset_bar, self.datetime_block]
         total = 2 * self.px(STAGE_PADY) + self.px(8)
@@ -824,10 +864,14 @@ class RadioTimerApp:
         self.root.update_idletasks()
 
         view_w, view_h = self._center_viewport(width, height)
+        # El alto del título depende de su letra, y la letra del ancho: se ajusta antes y después del anillo.
+        self._fit_program_title(layout.stage_width(mode, view_w, self.ring_size, self.scale))
+        self.root.update_idletasks()
         ring = layout.ring_size(mode, view_w, view_h, self._stage_reserved_height(), self.scale)
         self.ring_size = ring
         stage_w = layout.stage_width(mode, view_w, ring, self.scale)
         self.stage.columnconfigure(0, minsize=stage_w)
+        self._fit_program_title(stage_w)
         self._fit_clock_fonts(mode, ring)
         self._place_clock_items()
         if mode == layout.MODE_STACKED:
@@ -848,6 +892,11 @@ class RadioTimerApp:
     def step(self, now: datetime) -> None:
         """Recalcula todo el estado para el instante `now` y redibuja."""
         self.now = now
+        hour = model.top_of_hour(now)
+        if hour != self._hour_anchor:
+            self._restart_for_hour(hour)
+        if hour != self._program_hour:
+            self._update_program(hour)
         self.schedule = model.build_schedule(self.segments, self.program_start, now)
         self.active = model.find_active(self.schedule)
         self.next_segment = model.next_after(self.schedule, self.active)
@@ -857,11 +906,55 @@ class RadioTimerApp:
         if flashing != self.flashing:
             self._dirty = True
         self.flashing = flashing
-        if self._track_block_change():
+        program_changed = self._track_program_change()
+        if self._track_block_change() or program_changed:
             self._dirty = True
             self._apply_mode()
             self._schedule_layout()
         self._render()
+
+    def _restart_for_hour(self, hour: datetime) -> None:
+        """En cada hora en punto la secuencia vuelve a empezar, como en el timer original de cabina."""
+        self._hour_anchor = hour
+        self.program_start = hour
+        self.start_hour = hour.hour
+        self.start_minute = 0
+        if self._previous_active_id is not _UNSET:
+            # Aunque el bloque sea el mismo de antes (p. ej. EN AIRE largo), cuenta como una entrada nueva.
+            self._previous_active_id = None
+        self.log.add("Nueva hora", f"Secuencia reiniciada a las {model.format_time_of_day(hour)}", "Programación",
+                     at=self.now)
+
+    def _update_program(self, hour: datetime) -> None:
+        """Programa en curso y siguiente; solo cambian en las horas en punto o al editar la parrilla."""
+        self._program_hour = hour
+        self.program = model.program_at(self.programs, self.now)
+        self.upcoming = model.next_program(self.programs, self.now)
+
+    def _track_program_change(self) -> bool:
+        """Registra en el historial cada cambio de programa. Devuelve si hubo cambio."""
+        program_id = self.program.id if self.program else None
+        previous = self._previous_program_id
+        if previous is not _UNSET and previous == program_id:
+            return False
+        self._previous_program_id = program_id
+        if self.program is not None:
+            self.log.add(f"Programa: {self.program.title}", self.program.hours_label, "Parrilla", at=self.now)
+        elif previous is not _UNSET:
+            self.log.add("Sin programa asignado", "La parrilla no tiene programa para esta hora", "Parrilla",
+                         at=self.now)
+        self._render_program()
+        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+            self._settings_dialog.refresh_programs()
+        return True
+
+    def _render_program(self) -> None:
+        program = self.program
+        self.root.title(f"{program.title} · {APP_TITLE}" if program is not None else APP_TITLE)
+        caption = f"PROGRAMA  ·  {program.hours_label}" if program is not None else "PROGRAMA"
+        self.program_caption.configure(text=caption)
+        self._fit_program_title(int(self.stage.grid_columnconfigure(0).get("minsize", self.px(520))))
+        self._dirty = True  # el panel izquierdo muestra el programa siguiente
 
     def _track_block_change(self) -> bool:
         """Registra en el historial cada cambio de bloque. Devuelve si hubo cambio."""
@@ -962,17 +1055,25 @@ class RadioTimerApp:
             row["tag"].configure(bg=theme.mix(bg, row["tag_fg"], 0.12))
             row["arrow"].configure(bg=bg, fg=self.accent if item.is_active else bg)
 
-        if self.next_segment is not None:
+        next_hour = self._hour_anchor + timedelta(hours=1)
+        if self.next_segment is not None and self.next_segment.start < next_hour:
             self._show_next_box("PRÓXIMA SECCIÓN", self.next_segment.label, self.accent,
                                 f"{model.format_time_of_day(self.next_segment.start)} · "
                                 f"{model.format_duration(self.next_segment.duration)}")
+        elif self.status == "running" and self.segments:
+            # Lo que sigue es la nueva hora: la secuencia vuelve a empezar desde la primera sección.
+            first = self.segments[0]
+            self._show_next_box("PRÓXIMA SECCIÓN", first.label, first.color,
+                                f"{model.format_time_of_day(next_hour)} · nueva hora")
         elif self.status == "done":
-            self._show_next_box("PROGRAMACIÓN COMPLETADA", "Reiniciar para volver a empezar", theme.GREEN, "")
+            restart = model.format_time_of_day(self._hour_anchor + timedelta(hours=1))
+            self._show_next_box("PROGRAMACIÓN COMPLETADA", f"Vuelve a empezar a las {restart}", theme.GREEN, "")
         elif self.status == "pending":
             self._show_next_box("EN ESPERA", f"El programa inicia a las {model.format_time_of_day(self.program_start)}",
                                 theme.GREEN, "")
         else:
             self.next_box.pack_forget()
+        self._render_next_program()
 
     def _show_next_box(self, caption: str, title: str, color: str, meta: str) -> None:
         self.next_caption.configure(text=caption)
@@ -984,7 +1085,17 @@ class RadioTimerApp:
         else:
             self.next_meta.pack_forget()
         if not self.next_box.winfo_manager():
-            self.next_box.pack(fill="x", pady=(self.px(16), 0))
+            self.next_box.pack(fill="x", pady=(self.px(16), 0), before=self.next_program_box)
+
+    def _render_next_program(self) -> None:
+        if self.upcoming is None:
+            self.next_program_box.pack_forget()
+            return
+        upcoming, begins = self.upcoming
+        self.next_program_title.configure(text=upcoming.title, wraplength=self._left_text_width() + self.px(60))
+        self.next_program_meta.configure(text=f"{model.format_relative_day(begins, self.now)} · {upcoming.hours_label}")
+        if not self.next_program_box.winfo_manager():
+            self.next_program_box.pack(fill="x", pady=(self.px(12), 0))
 
     def _render_active(self, accent: str, flash_phase: bool) -> None:
         active = self.active
@@ -1153,18 +1264,74 @@ class RadioTimerApp:
         self._segments_changed()
         return True
 
-    def _segments_changed(self) -> None:
+    def set_segment_minutes(self, segment_id: str, minutes: object) -> model.Segment | None:
+        """Cambia la duración de una sección sin moverla de su lugar en la secuencia."""
+        for index, segment in enumerate(self.segments):
+            if segment.id == segment_id:
+                updated = model.with_minutes(segment, minutes)
+                if updated.duration == segment.duration:
+                    return segment
+                self.segments[index] = updated
+                self.log.add(f"Duración cambiada: {updated.label}", model.format_duration(updated.duration),
+                             "Configuración", at=self.now)
+                # La lista de configuración no se redibuja: el operador está escribiendo en ella.
+                self._segments_changed(refresh_dialog=False)
+                return updated
+        return None
+
+    def _segments_changed(self, refresh_dialog: bool = True) -> None:
         self._rebuild_timeline()
         self._rebuild_separate_cards()
         self.save_preferences()
         self._dirty = True
         self.step(self.clock())
         self._schedule_layout()
-        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+        if refresh_dialog and self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             self._settings_dialog.refresh()
 
+    # ------------------------------------------------------ parrilla semanal ---
+
+    def add_program(self, day: object, start: object, end: object, title: str) -> model.Program:
+        program = model.new_program(day, start, end, title)
+        clash = model.overlapping_program(self.programs, program)
+        if clash is not None:
+            raise ValueError(f"Se cruza con «{clash.title}» ({clash.hours_label})")
+        self.programs.append(program)
+        self.log.add(f"Programa agregado: {program.title}",
+                     f"{model.WEEKDAYS_ES[program.day]} {program.hours_label}", "Configuración", at=self.now)
+        self._programs_changed()
+        return program
+
+    def delete_program(self, program_id: str) -> bool:
+        target = next((program for program in self.programs if program.id == program_id), None)
+        if target is None:
+            return False
+        self.programs = [program for program in self.programs if program.id != program_id]
+        self.log.add(f"Programa eliminado: {target.title}",
+                     f"{model.WEEKDAYS_ES[target.day]} {target.hours_label}", "Configuración", at=self.now)
+        self._programs_changed()
+        return True
+
+    def copy_program_day(self, source_day: int, target_days: list[int]) -> None:
+        self.programs = model.copy_day(self.programs, source_day, target_days)
+        names = ", ".join(model.WEEKDAYS_ES[day] for day in target_days if day != source_day)
+        self.log.add(f"Parrilla del {model.WEEKDAYS_ES[source_day].lower()} copiada", names, "Configuración",
+                     at=self.now)
+        self._programs_changed()
+
+    def _programs_changed(self) -> None:
+        self.save_preferences()
+        self._program_hour = None
+        self._dirty = True
+        self.step(self.clock())
+        self._render_program()
+        self._apply_mode()
+        self._schedule_layout()
+        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+            self._settings_dialog.refresh_programs()
+
     def save_preferences(self) -> None:
-        prefs = Preferences(station=self.station, segments=list(self.segments),
+        prefs = Preferences(station=self.station, segments=list(self.segments), programs=list(self.programs),
                             alert_enabled=self.alert_enabled, sound_enabled=self.sound_enabled)
         try:
             save_preferences(prefs, self.prefs_path)
