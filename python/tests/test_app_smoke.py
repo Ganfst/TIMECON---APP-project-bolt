@@ -1,12 +1,14 @@
 """Pruebas de la interfaz: requieren un entorno con pantalla (Tk)."""
 import tempfile
 import time
+from unittest import mock
 import tkinter as tk
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from radio_timer import layout, model, schedule_sync, widgets
+from radio_timer import layout, model, schedule_sync, updates, widgets
+from radio_timer import __version__ as radio_timer_version
 from radio_timer.app import RadioTimerApp
 from radio_timer.storage import Preferences, load_preferences
 
@@ -284,6 +286,129 @@ class AppSmokeTests(unittest.TestCase):
         dialog._queue_minutes("s1", variable)  # como al pulsar la flecha: espera una pausa
         dialog.close()  # los minutos pendientes se aplican al cerrar
         self.assertEqual(app.segments[0].duration, 50 * 60)
+
+    # ------------------------------------------------------ gestor de versiones ---
+
+    def _wait_for_update_work(self):
+        deadline = time.monotonic() + 5
+        while self.app.update_busy and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.02)
+        self.assertFalse(self.app.update_busy)
+
+    @staticmethod
+    def _fake_releases():
+        return [
+            updates.Release(version="9.9.0", date="2026-09-20", title="Gran salto",
+                            notes={"nuevo": ["Función enorme"], "arreglado": ["Aquel fallo"]},
+                            file="radio-timer-9.9.0.zip", sha256="0" * 64, size=51_200),
+            updates.Release(version="0.1.0", date="2025-01-01", title="Antigua",
+                            file="radio-timer-0.1.0.zip", sha256="1" * 64),
+        ]
+
+    def test_version_manager_check_install_and_restart(self):
+        app = self.app
+        self.assertEqual(app.footer_version.cget("text"), f"v{radio_timer_version}")
+        dialog = app.open_versions()
+        self.root.update_idletasks()
+        self.assertIn("Configura la fuente", dialog.status_label.cget("text"))
+
+        releases = self._fake_releases()
+        self.assertTrue(app.check_updates(manual=True, fetch=lambda: releases))
+        self.assertFalse(app.check_updates(manual=True, fetch=lambda: releases))  # ya hay una en curso
+        self._wait_for_update_work()
+        self.assertEqual(app.update_available.version, "9.9.0")
+        self.assertIn("9.9.0 disponible", app.footer_version.cget("text"))
+        self.assertEqual(dialog.status_label.cget("text"), "Nueva versión disponible: v9.9.0")
+        self.assertTrue(load_preferences(self.prefs_path).last_update_check.startswith("2026-09-14T10:49"))
+        texts = self._all_label_texts(dialog.releases_frame)
+        self.assertTrue(any("v9.9.0 · Gran salto" in text for text in texts))
+        self.assertTrue(any("Función enorme" in text for text in texts))
+        self.assertTrue(any("50 KB" in text for text in texts))
+        self.assertEqual(app.log.entries[0].title, "Actualización disponible: v9.9.0")
+
+        self.assertTrue(app.install_version(releases[0], installer=lambda: None))
+        self._wait_for_update_work()
+        self.assertEqual(app.update_installed_version, "9.9.0")
+        self.assertIn("Reinicia para usar v9.9.0", app.footer_version.cget("text"))
+        self.assertEqual(dialog.restart_button.winfo_manager(), "pack")
+        self.assertEqual(app.log.entries[0].title, "Versión instalada: v9.9.0")
+
+        restarted = []
+        app._restarter = lambda: restarted.append(True)
+        app.restart_app()
+        self.assertEqual(restarted, [True])
+
+    def test_update_check_error_keeps_state(self):
+        app = self.app
+
+        def failing():
+            raise updates.UpdateError("No se pudo conectar: sin red")
+
+        dialog = app.open_versions()
+        app.check_updates(manual=True, fetch=failing)
+        self._wait_for_update_work()
+        self.assertIsNone(app.update_available)
+        self.assertTrue(app.update_status.startswith("No se pudo:"))
+        self.assertEqual(dialog.status_label.cget("fg"), "#d34c62")
+        self.assertEqual(app.footer_version.cget("text"), f"v{radio_timer_version}")
+        self.assertEqual(load_preferences(self.prefs_path).last_update_check, "")
+        self.assertEqual(app.log.entries[0].title, "Actualización fallida")
+
+    def test_update_mode_and_url_persist(self):
+        app = self.app
+        self.assertEqual(app.update_mode, "weekly")
+        app.set_update_mode("daily")
+        app.set_update_mode("cada-rato")  # desconocido: se ignora
+        app.set_update_url("  D:/actualizaciones  ")
+        stored = load_preferences(self.prefs_path)
+        self.assertEqual(stored.update_mode, "daily")
+        self.assertEqual(stored.update_url, "D:/actualizaciones")
+
+    def test_auto_tick_respects_cadence(self):
+        app = self.app
+        calls = []
+        app.check_updates = lambda **kwargs: calls.append(True)
+        app._auto_update_tick()               # sin fuente configurada: no comprueba
+        app.update_url = "D:/actualizaciones"
+        app.update_mode = "manual"
+        app._auto_update_tick()               # manual: nunca automático
+        self.assertEqual(calls, [])
+        app.update_mode = "daily"
+        app._auto_update_tick()               # nunca se ha comprobado: toca
+        self.assertEqual(calls, [True])
+        app.last_update_check = "2026-09-14T09:00:00"
+        app._auto_update_tick()               # hace una hora: aún no toca
+        self.assertEqual(calls, [True])
+
+    @staticmethod
+    def _all_label_texts(widget):
+        texts = []
+        for child in widget.winfo_children():
+            if isinstance(child, tk.Label):
+                texts.append(str(child.cget("text")))
+            texts.extend(AppSmokeTests._all_label_texts(child))
+        return texts
+
+    def test_quit_asks_while_installing(self):
+        app = self.app
+        app.update_activity = "install"
+        with mock.patch("radio_timer.app.messagebox.askyesno", return_value=False) as ask:
+            app.quit()   # el operador contesta "No": la app sigue abierta
+        self.assertTrue(ask.called)
+        self.assertTrue(app.root.winfo_exists())
+        app.update_activity = ""
+
+    def test_restart_waits_for_running_work(self):
+        app = self.app
+        restarted = []
+        app._restarter = lambda: restarted.append(True)
+        app.update_busy = True
+        app.restart_app()
+        self.assertEqual(restarted, [])
+        app.update_busy = False
+        app.restart_app()
+        self.assertEqual(restarted, [True])
 
     # ------------------------------------------------------ tamaños del doc ---
 

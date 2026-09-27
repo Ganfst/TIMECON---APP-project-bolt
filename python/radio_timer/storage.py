@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .model import Program, Segment, default_segments
+from .updates import CHECK_MODES
 
 APP_FOLDER = "RadioTimer"
 FILE_NAME = "prefs.json"
@@ -22,6 +23,9 @@ class Preferences:
     programs_synced_at: str = ""  # fecha ISO de la última sincronización con la web, vacía si nunca
     alert_enabled: bool = True
     sound_enabled: bool = False
+    update_mode: str = "weekly"       # manual | daily | weekly
+    update_url: str = ""              # URL o carpeta con updates.json; vacía = sin fuente configurada
+    last_update_check: str = ""       # fecha ISO de la última comprobación, vacía si nunca
 
     def to_dict(self) -> dict:
         return {
@@ -31,6 +35,9 @@ class Preferences:
             "programsSyncedAt": self.programs_synced_at,
             "alertEnabled": self.alert_enabled,
             "soundEnabled": self.sound_enabled,
+            "updateMode": self.update_mode,
+            "updateUrl": self.update_url,
+            "lastUpdateCheck": self.last_update_check,
         }
 
     @classmethod
@@ -61,6 +68,12 @@ class Preferences:
             prefs.alert_enabled = data["alertEnabled"]
         if isinstance(data.get("soundEnabled"), bool):
             prefs.sound_enabled = data["soundEnabled"]
+        if data.get("updateMode") in CHECK_MODES:
+            prefs.update_mode = data["updateMode"]
+        if isinstance(data.get("updateUrl"), str):
+            prefs.update_url = data["updateUrl"].strip()
+        if isinstance(data.get("lastUpdateCheck"), str):
+            prefs.last_update_check = data["lastUpdateCheck"]
         return prefs
 
 

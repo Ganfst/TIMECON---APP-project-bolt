@@ -45,6 +45,21 @@ python run.py --prefs otro.json    # usa otro archivo de preferencias
 - El historial registra entradas a bloque, reinicios, pánico y cambios de configuración, y se exporta a CSV compatible con Excel.
 - Si hay más secciones de las que caben, los paneles muestran una barra de desplazamiento y responden a la rueda del ratón.
 
+## Actualizaciones
+
+En Configuración → **Versiones y actualizaciones** se elige la cadencia de comprobación (manual,
+diaria o semanal) y la fuente: una URL https o carpeta (red o USB) con `updates.json` y el ZIP de cada
+versión. La lista muestra todas las versiones con sus notas (nuevo / arreglado / cambiado) y
+cualquiera se puede instalar sin reinstalar la app; lo anterior queda respaldado en
+`%APPDATA%\RadioTimer\backups\` y el cambio se aplica al reiniciar. Para publicar versiones:
+
+```
+python tools/make_release.py --out "D:/actualizaciones" --titulo "..." --nuevo "..." --arreglado "..."
+```
+
+El detalle del diseño (reutilizable en otros proyectos) está en
+[../gestor-de-versiones.md](../gestor-de-versiones.md).
+
 ## Preferencias
 
 Emisora, secciones, parrilla de programas e interruptores se guardan en `%APPDATA%\RadioTimer\prefs.json` (en Linux/macOS, `~/.config/RadioTimer/prefs.json`).
@@ -69,6 +84,8 @@ radio_timer/
   layout.py            tamaños del reloj, la fecha y los paneles
   storage.py           preferencias en JSON
   schedule_sync.py     descarga de la programación semanal desde la web
+  updates.py           gestor de versiones (manifiesto, descarga, instalación)
+tools/make_release.py  publica una versión (ZIP + updates.json)
   activity_log.py      historial y exportación CSV
   theme.py             colores y fuentes
   widgets.py           botones, campos, interruptores y áreas con desplazamiento

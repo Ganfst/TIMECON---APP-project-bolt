@@ -6,7 +6,7 @@ from datetime import datetime
 from tkinter import messagebox
 from typing import TYPE_CHECKING, Callable
 
-from . import model, schedule_sync, theme, widgets
+from . import __version__, model, schedule_sync, theme, updates, widgets
 
 if TYPE_CHECKING:
     from .app import RadioTimerApp
@@ -145,8 +145,10 @@ class SettingsDialog(_Dialog):
             body, "Sonido de señal", "Tono breve al cambiar de bloque",
             self.sound_var, lambda: app.set_sound_enabled(self.sound_var.get()))
 
+        widgets.button(body, "Versiones y actualizaciones   ›", app.open_versions, font=fonts["button"],
+                       kind="ghost", pady=P(10)).pack(fill="x", pady=(P(20), 0))
         widgets.button(body, "Guardar preferencias", self._save, font=fonts["button"], kind="primary",
-                       pady=P(14)).pack(fill="x", pady=(P(28), 0))
+                       pady=P(14)).pack(fill="x", pady=(P(10), 0))
         self._minute_jobs: dict[str, str] = {}
         self.refresh()
         self.refresh_programs()
@@ -474,3 +476,150 @@ class HistoryDialog(_Dialog):
             self.text.insert("end", f"{entry.detail} · {entry.source}\n", "detail")
         self.text.configure(state="disabled")
         self.export_button.configure(state="normal" if entries else "disabled")
+UPDATE_MODE_OPTIONS = {label: mode for mode, label in updates.CHECK_MODE_NAMES.items()}
+NOTE_COLORS = {"Nuevo": theme.GREEN, "Arreglado": theme.AMBER, "Cambiado": theme.MUTED, "Seguridad": theme.DANGER}
+
+
+class VersionsDialog(_Dialog):
+    """Gestor de versiones: comprobar actualizaciones e instalar la versión que se elija."""
+
+    def __init__(self, app: "RadioTimerApp"):
+        super().__init__(app, "Versiones")
+        fonts = app.f
+        P = app.px
+        self.scroll = widgets.ScrollFrame(self, bg=theme.PANEL_DARK)
+        self.scroll.pack(fill="both", expand=True)
+        body = tk.Frame(self.scroll.body, bg=theme.PANEL_DARK, padx=P(28), pady=P(24))
+        body.pack(fill="both", expand=True)
+        self._header(body, "GESTOR DE VERSIONES", "Actualizaciones")
+
+        current = tk.Frame(body, bg=theme.PANEL_DARK)
+        current.pack(fill="x")
+        widgets.label(current, "Versión instalada", font=fonts["body"], fg="#83a3a3").pack(side="left")
+        widgets.label(current, f"v{__version__}", font=fonts["body_bold"], fg=theme.TEXT, anchor="e").pack(side="right")
+        widgets.separator(body, pady=(P(14), 0))
+
+        # Cadencia de comprobación
+        self._caption(body, "COMPROBACIÓN AUTOMÁTICA", (P(18), 0))
+        mode_row = tk.Frame(body, bg=theme.PANEL_DARK)
+        mode_row.pack(fill="x", pady=(P(8), 0))
+        self.mode_var = tk.StringVar(value=updates.CHECK_MODE_NAMES.get(app.update_mode, "Manual"))
+        widgets.option_menu(mode_row, self.mode_var, list(UPDATE_MODE_OPTIONS), font=fonts["body"]).pack(
+            side="left", fill="x", expand=True)
+        self.mode_var.trace_add("write", lambda *_args: app.set_update_mode(UPDATE_MODE_OPTIONS[self.mode_var.get()]))
+        widgets.label(body, "Con cadencia diaria o semanal, la app comprueba sola mientras está abierta "
+                            "y avisa en la esquina inferior derecha; nunca instala sin que se lo pidas.",
+                      font=fonts["small"], fg=theme.MUTED, wraplength=P(440), justify="left").pack(fill="x", pady=(P(6), 0))
+
+        # Fuente
+        self._caption(body, "FUENTE DE ACTUALIZACIONES", (P(16), 0))
+        self.url_var = tk.StringVar(value=app.update_url)
+        widgets.entry(body, self.url_var, font=fonts["field"]).pack(fill="x", pady=(P(8), 0))
+        self.url_var.trace_add("write", lambda *_args: app.set_update_url(self.url_var.get()))
+        widgets.label(body, "URL o carpeta (red o USB) con updates.json y el ZIP de cada versión. "
+                            "Se publica con tools/make_release.py.",
+                      font=fonts["small"], fg=theme.DIM, wraplength=P(440), justify="left").pack(fill="x", pady=(P(4), 0))
+
+        buttons = tk.Frame(body, bg=theme.PANEL_DARK)
+        buttons.pack(fill="x", pady=(P(12), 0))
+        self.check_button = widgets.button(buttons, "⟳   Comprobar ahora", self._check, font=fonts["button"],
+                                           kind="primary", padx=P(16), pady=P(10))
+        self.check_button.pack(side="left")
+        self.restart_button = widgets.button(buttons, "Reiniciar la aplicación", app.restart_app,
+                                             font=fonts["button"], padx=P(16), pady=P(10))
+        self.status_label = widgets.label(body, "", font=fonts["small"], fg=theme.MUTED,
+                                          wraplength=P(440), justify="left")
+        self.status_label.pack(fill="x", pady=(P(8), 0))
+
+        self._caption(body, "VERSIONES PUBLICADAS", (P(18), P(4)))
+        self.releases_frame = tk.Frame(body, bg=theme.PANEL_DARK)
+        self.releases_frame.pack(fill="x")
+        self.refresh()
+
+    # ------------------------------------------------------------ helpers ---
+
+    def _caption(self, parent: tk.Frame, text: str, pady: tuple[int, int]) -> None:
+        widgets.label(parent, text, font=self.app.f["dialog_label"], fg="#83a3a3").pack(fill="x", pady=pady)
+
+    def _check(self) -> None:
+        self.app.check_updates(manual=True)
+
+    def _install(self, release: updates.Release) -> None:
+        compared = updates.compare_versions(release.version, __version__)
+        if compared < 0 and not messagebox.askyesno(
+                "Instalar una versión anterior",
+                f"v{release.version} es anterior a la instalada (v{__version__}).\n¿Volver a esa versión?",
+                parent=self):
+            return
+        if compared == 0 and not messagebox.askyesno(
+                "Reinstalar", f"v{release.version} ya es la versión instalada.\n¿Reinstalarla?", parent=self):
+            return
+        if not self.app.install_version(release):
+            self.status_label.configure(text="Hay otra operación en curso; espera a que termine.", fg=theme.AMBER)
+
+    # ------------------------------------------------------------- refresh ---
+
+    def refresh(self) -> None:
+        if not self.winfo_exists():
+            return
+        app = self.app
+        fonts = app.f
+        P = app.px
+        self.check_button.configure(state="disabled" if app.update_busy else "normal")
+        self.restart_button.configure(state="disabled" if app.update_busy else "normal")
+        if app.update_installed_version:
+            if not self.restart_button.winfo_manager():
+                self.restart_button.pack(side="left", padx=(P(10), 0))
+        else:
+            self.restart_button.pack_forget()
+
+        status = app.update_status
+        if not status:
+            status = ("Pulsa «Comprobar ahora» para ver las versiones publicadas."
+                      if app.update_url else "Configura la fuente y pulsa «Comprobar ahora».")
+        failed = status.startswith("No se pudo")
+        self.status_label.configure(text=status, fg=theme.DANGER if failed else theme.MUTED)
+
+        for child in self.releases_frame.winfo_children():
+            child.destroy()
+        if not app.available_releases:
+            widgets.label(self.releases_frame, "Ninguna versión cargada todavía.", font=fonts["small"],
+                          fg=theme.DIM, anchor="center").pack(fill="x", pady=P(12))
+        for release in app.available_releases:
+            self._release_row(release)
+
+    def _release_row(self, release: updates.Release) -> None:
+        app = self.app
+        fonts = app.f
+        P = app.px
+        newer = release.is_newer_than(__version__)
+        current = updates.compare_versions(release.version, __version__) == 0
+        row = tk.Frame(self.releases_frame, bg=theme.PANEL_DARK, pady=P(10))
+        row.pack(fill="x")
+        head = tk.Frame(row, bg=theme.PANEL_DARK)
+        head.pack(fill="x")
+        title = f"v{release.version}" + (f" · {release.title}" if release.title else "")
+        widgets.label(head, title, font=fonts["body_bold"], fg=theme.TEXT if newer else theme.TEXT_SOFT,
+                      wraplength=P(300), justify="left").pack(side="left", fill="x", expand=True)
+        if release.version == app.update_installed_version:
+            tk.Label(head, text="INSTALADA · REINICIA", font=fonts["tag"], fg=theme.AMBER,
+                     bg=theme.mix(theme.PANEL_DARK, theme.AMBER, 0.15), padx=P(8), pady=P(3)).pack(side="right")
+        else:
+            text = "Instalar" if newer else ("Reinstalar" if current else "Volver a esta")
+            widgets.button(head, text, lambda r=release: self._install(r), font=fonts["small"],
+                           kind="primary" if newer else "default", padx=P(12), pady=P(6),
+                           state="disabled" if app.update_busy else "normal").pack(side="right")
+        meta = " · ".join(part for part in (
+            release.date, updates.format_size(release.size), "instalada actualmente" if current else "",
+        ) if part)
+        if meta:
+            widgets.label(row, meta, font=fonts["small"], fg=theme.DIM).pack(fill="x", pady=(P(2), 0))
+        for kind_label, text in release.notes_lines():
+            line = tk.Frame(row, bg=theme.PANEL_DARK)
+            line.pack(fill="x", pady=(P(3), 0))
+            widgets.label(line, kind_label.upper(), font=fonts["tag"], fg=NOTE_COLORS[kind_label],
+                          width=11).pack(side="left", anchor="n")
+            widgets.label(line, text, font=fonts["small"], fg=theme.TEXT_SOFT,
+                          wraplength=P(330), justify="left").pack(side="left", fill="x", expand=True)
+        tk.Frame(self.releases_frame, bg="#152a2e", height=1).pack(fill="x")
+

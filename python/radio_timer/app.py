@@ -8,17 +8,19 @@ import threading
 import tkinter as tk
 from datetime import datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 from tkinter import font as tkfont
 from typing import Callable
 
-from . import __version__, layout, model, schedule_sync, theme, widgets
+from . import __version__, layout, model, schedule_sync, theme, updates, widgets
 from .activity_log import ActivityLog
-from .dialogs import HistoryDialog, SettingsDialog
+from .dialogs import HistoryDialog, SettingsDialog, VersionsDialog
 from .storage import Preferences, load_preferences, save_preferences
 
 APP_TITLE = "Radio Timer"
 TICK_MS = 100
+UPDATE_FIRST_CHECK_MS = 15_000    # primera comprobación automática tras abrir
+UPDATE_TICK_MS = 30 * 60 * 1000   # cada cuánto se revisa si ya toca comprobar según la cadencia
 WAVE_BAR_COUNT = 22
 SIDE_PANEL_WIDTH = 320
 SIDE_MARGIN = 28
@@ -112,6 +114,21 @@ class RadioTimerApp:
         self.sync_message = ""
         self._sync_results: queue.Queue = queue.Queue()
         self._sync_job: str | None = None
+
+        # Gestor de versiones (Configuración -> Versiones y actualizaciones).
+        self.update_mode = prefs.update_mode
+        self.update_url = prefs.update_url
+        self.last_update_check = prefs.last_update_check
+        self.available_releases: list[updates.Release] = []
+        self.update_available: updates.Release | None = None
+        self.update_installed_version: str | None = None
+        self.update_busy = False
+        self.update_activity = ""   # "check" o "install" mientras update_busy
+        self.update_status = ""
+        self._update_results: queue.Queue = queue.Queue()
+        self._update_job: str | None = None
+        self._update_timer_job: str | None = None
+        self._restarter: Callable[[], None] = self._restart_process
         self.alert_enabled = prefs.alert_enabled
         self.sound_enabled = prefs.sound_enabled
 
@@ -151,6 +168,7 @@ class RadioTimerApp:
         self._previous_program_id: object = _UNSET
         self._settings_dialog: SettingsDialog | None = None
         self._history_dialog: HistoryDialog | None = None
+        self._versions_dialog: VersionsDialog | None = None
         self._timeline_rows: list[dict] = []
         self._separate_cards: list[dict] = []
         self._wave_bars: list[int] = []
@@ -180,6 +198,7 @@ class RadioTimerApp:
             self.root.after(200, self.toggle_fullscreen)
         if autostart:
             self._tick_job = self.root.after(TICK_MS, self._tick)
+            self._update_timer_job = self.root.after(UPDATE_FIRST_CHECK_MS, self._auto_update_tick)
 
     # ---------------------------------------------------------- utilidades ---
 
@@ -512,6 +531,8 @@ class RadioTimerApp:
         self.footer_version = widgets.label(footer, f"v{__version__}", font=self.f["footer_version"],
                                             fg="#4c6264", anchor="e")
         self.footer_version.grid(row=0, column=2, sticky="e")
+        self.footer_version.configure(cursor="hand2")
+        self.footer_version.bind("<Button-1>", lambda _event: self.open_versions())
 
     def _bind_keys(self) -> None:
         self.root.bind("<Escape>", self._on_escape)
@@ -810,7 +831,7 @@ class RadioTimerApp:
         self.datetime_block.configure(bg=dt_bg, highlightthickness=0 if self.fullscreen else 1)
         for label in (self.dt_weekday, self.dt_date, self.dt_time):
             label.configure(bg=dt_bg)
-        self.footer_version.configure(text="Esc · salir de pantalla completa" if self.fullscreen else f"v{__version__}")
+        self._refresh_update_notice()
         live_px, station_px = layout.FOOTER_PX[self.fullscreen]
         self._set_font_px("footer_live", self.px(live_px))
         self._set_font_px("footer_station", self.px(station_px))
@@ -1383,6 +1404,165 @@ class RadioTimerApp:
         if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
             self._settings_dialog.refresh_sync()
 
+    # -------------------------------------------------------- actualizaciones ---
+
+    def set_update_mode(self, mode: str) -> str:
+        if mode in updates.CHECK_MODES and mode != self.update_mode:
+            self.update_mode = mode
+            self.log.add("Cadencia de actualizaciones", updates.CHECK_MODE_NAMES[mode], "Versiones", at=self.now)
+            self.save_preferences()
+        return self.update_mode
+
+    def set_update_url(self, url: str) -> None:
+        clean = str(url).strip()
+        if clean != self.update_url:
+            self.update_url = clean
+            self.save_preferences()
+
+    def check_updates(self, manual: bool = False,
+                      fetch: Callable[[], list[updates.Release]] | None = None) -> bool:
+        """Consulta el manifiesto de versiones en segundo plano; `manual` viene del botón."""
+        if self.update_busy:
+            return False
+        if fetch is None and not self.update_url:
+            self.update_status = "Configura la dirección de actualizaciones"
+            self._notify_updates()
+            return False
+        job = fetch or (lambda: updates.fetch_releases(self.update_url))
+        self.update_busy = True
+        self.update_activity = "check"
+        self.update_status = "Comprobando actualizaciones…"
+        self._notify_updates()
+        self._start_update_work("check", job)
+        return True
+
+    def install_version(self, release: updates.Release, installer: Callable[[], None] | None = None) -> bool:
+        """Descarga e instala `release` en segundo plano; al terminar solo falta reiniciar."""
+        if self.update_busy:
+            return False
+
+        def job() -> None:
+            if installer is not None:
+                installer()
+                return
+            zip_path = updates.download_release(release, self.update_url, updates.default_updates_dir())
+            updates.install_release(zip_path, updates.app_directory(), updates.default_backup_root(),
+                                    expect_version=release.version)
+
+        self.update_busy = True
+        self.update_activity = "install"
+        self.update_status = f"Descargando e instalando v{release.version}…"
+        self._notify_updates()
+        self._start_update_work("install", job, release=release)
+        return True
+
+    def _start_update_work(self, kind: str, job: Callable[[], object], **extra) -> None:
+        def work() -> None:
+            try:
+                self._update_results.put((kind, job(), extra))
+            except updates.UpdateError as exc:
+                self._update_results.put(("error", exc, extra))
+            except Exception as exc:  # un fallo raro tampoco debe dejar los botones bloqueados
+                self._update_results.put(("error", updates.UpdateError(f"Error inesperado: {exc}"), extra))
+
+        threading.Thread(target=work, daemon=True).start()
+        if self._update_job is None:
+            self._update_job = self.root.after(150, self._poll_updates)
+
+    def _poll_updates(self) -> None:
+        self._update_job = None
+        try:
+            kind, payload, extra = self._update_results.get_nowait()
+        except queue.Empty:
+            self._update_job = self.root.after(150, self._poll_updates)
+            return
+        self.update_busy = False
+        self.update_activity = ""
+        if kind == "error":
+            self.update_status = f"No se pudo: {payload}"
+            self.log.add("Actualización fallida", str(payload), "Versiones", at=self.now)
+        elif kind == "check":
+            self.available_releases = payload
+            self.last_update_check = self.clock().isoformat(timespec="seconds")
+            newest = updates.first_newer(payload)
+            self.update_available = newest
+            if newest is not None:
+                self.update_status = f"Nueva versión disponible: v{newest.version}"
+                self.log.add(f"Actualización disponible: v{newest.version}",
+                             newest.title or newest.date, "Versiones", at=self.now)
+            elif payload:
+                self.update_status = f"Estás en la última versión (v{__version__})"
+            else:
+                self.update_status = "El manifiesto no tiene versiones publicadas"
+            self.save_preferences()
+        elif kind == "install":
+            release = extra["release"]
+            self.update_installed_version = release.version
+            self.update_available = None
+            self.update_status = f"v{release.version} instalada. Reinicia la aplicación para usarla."
+            self.log.add(f"Versión instalada: v{release.version}", "Pendiente de reinicio", "Versiones", at=self.now)
+        self._refresh_update_notice()
+        self._notify_updates()
+
+    def _auto_update_tick(self) -> None:
+        """Cada media hora mira si, según la cadencia (diaria/semanal), ya toca comprobar."""
+        self._update_timer_job = self.root.after(UPDATE_TICK_MS, self._auto_update_tick)
+        if self.update_busy or self.update_installed_version or not self.update_url:
+            return
+        if updates.should_check(self.last_update_check, self.update_mode, self.clock()):
+            self.check_updates()
+
+    def restart_app(self) -> None:
+        """Reinicia la aplicación para usar la versión recién instalada."""
+        if self.update_busy:
+            return
+        self.save_preferences()
+        self._restarter()
+
+    def _restart_process(self) -> None:
+        """Lanza el proceso nuevo y, solo si sigue vivo a los 2,5 s, cierra este.
+
+        Con pythonw una versión que no arranca moriría sin consola ni aviso; esta espera evita
+        quedarse sin timer en cabina por instalar una versión rota.
+        """
+        import subprocess
+        app_dir = updates.app_directory()
+        try:
+            process = subprocess.Popen([sys.executable, str(app_dir / "run.py")], cwd=str(app_dir))
+        except OSError as exc:
+            self.update_status = f"No se pudo reiniciar: {exc}"
+            self._notify_updates()
+            return
+        self.update_status = "Reiniciando…"
+        self._notify_updates()
+
+        def confirm() -> None:
+            if process.poll() is not None:
+                self.update_status = (f"La versión instalada no arrancó (código {process.returncode}). "
+                                      f"El respaldo está en {updates.default_backup_root()}")
+                self.log.add("El reinicio falló", self.update_status, "Versiones", at=self.now)
+                self._notify_updates()
+                return
+            self.quit()
+
+        self.root.after(2500, confirm)
+
+    def _refresh_update_notice(self) -> None:
+        """El texto de versión del pie también avisa de actualizaciones y reinicios pendientes."""
+        if self.fullscreen:
+            text, fg = "Esc · salir de pantalla completa", "#4c6264"
+        elif self.update_installed_version:
+            text, fg = f"⟳  Reinicia para usar v{self.update_installed_version}", theme.AMBER
+        elif self.update_available is not None:
+            text, fg = f"⬆  v{self.update_available.version} disponible", theme.GREEN
+        else:
+            text, fg = f"v{__version__}", "#4c6264"
+        self.footer_version.configure(text=text, fg=fg)
+
+    def _notify_updates(self) -> None:
+        if self._versions_dialog is not None and self._versions_dialog.winfo_exists():
+            self._versions_dialog.refresh()
+
     def _programs_changed(self) -> None:
         self.save_preferences()
         self._program_minute = None
@@ -1397,7 +1577,9 @@ class RadioTimerApp:
     def save_preferences(self) -> None:
         prefs = Preferences(station=self.station, segments=list(self.segments), programs=list(self.programs),
                             programs_synced_at=self.programs_synced_at,
-                            alert_enabled=self.alert_enabled, sound_enabled=self.sound_enabled)
+                            alert_enabled=self.alert_enabled, sound_enabled=self.sound_enabled,
+                            update_mode=self.update_mode, update_url=self.update_url,
+                            last_update_check=self.last_update_check)
         try:
             save_preferences(prefs, self.prefs_path)
         except OSError as exc:
@@ -1454,8 +1636,16 @@ class RadioTimerApp:
         self._history_dialog = HistoryDialog(self)
         return self._history_dialog
 
+    def open_versions(self) -> VersionsDialog:
+        if self._versions_dialog is not None and self._versions_dialog.winfo_exists():
+            self._versions_dialog.lift()
+            self._versions_dialog.focus_set()
+            return self._versions_dialog
+        self._versions_dialog = VersionsDialog(self)
+        return self._versions_dialog
+
     def close_dialogs(self) -> None:
-        for dialog in (self._settings_dialog, self._history_dialog):
+        for dialog in (self._settings_dialog, self._history_dialog, self._versions_dialog):
             if dialog is not None and dialog.winfo_exists():
                 dialog.close()
 
@@ -1470,7 +1660,7 @@ class RadioTimerApp:
 
     def shutdown(self) -> None:
         """Cancela las tareas programadas y cierra los diálogos (sin destruir la ventana)."""
-        for attribute in ("_tick_job", "_layout_job", "_sync_job"):
+        for attribute in ("_tick_job", "_layout_job", "_sync_job", "_update_job", "_update_timer_job"):
             job = getattr(self, attribute)
             if job is not None:
                 try:
@@ -1481,6 +1671,12 @@ class RadioTimerApp:
         self.close_dialogs()
 
     def quit(self) -> None:
+        if self.update_activity == "install":
+            if not messagebox.askyesno(
+                    "Instalación en curso",
+                    "Se está instalando una versión; cerrar ahora puede dejarla a medias.\n"
+                    "¿Cerrar de todas formas?", parent=self.root):
+                return
         self.shutdown()
         self.save_preferences()
         self.root.destroy()
