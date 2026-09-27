@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import tkinter as tk
+from datetime import datetime
 from tkinter import messagebox
 from typing import TYPE_CHECKING, Callable
 
-from . import model, theme, widgets
+from . import model, schedule_sync, theme, widgets
 
 if TYPE_CHECKING:
     from .app import RadioTimerApp
@@ -138,7 +139,7 @@ class SettingsDialog(_Dialog):
         self.sound_var = tk.BooleanVar(value=app.sound_enabled)
         self.alert_switch = self._switch_row(
             body, "Alerta de cambio",
-            f"Parpadea en rojo los últimos {model.FLASH_WINDOW_SECONDS} segundos de cada bloque",
+            f"Parpadea en rojo los últimos {model.FLASH_WINDOW_SECONDS} segundos antes de que el reloj central llegue a 0",
             self.alert_var, lambda: app.set_alert_enabled(self.alert_var.get()))
         self.sound_switch = self._switch_row(
             body, "Sonido de señal", "Tono breve al cambiar de bloque",
@@ -149,6 +150,7 @@ class SettingsDialog(_Dialog):
         self._minute_jobs: dict[str, str] = {}
         self.refresh()
         self.refresh_programs()
+        self.refresh_sync()
 
     def _build_programs(self, body: tk.Frame) -> None:
         fonts = self.app.f
@@ -157,6 +159,14 @@ class SettingsDialog(_Dialog):
         widgets.label(body, "Cada día tiene su propia parrilla. El título del programa aparece sobre el reloj "
                             "durante sus horas.", font=fonts["small"], fg=theme.MUTED, wraplength=P(460),
                       justify="left").pack(fill="x", pady=(P(4), 0))
+
+        sync_row = tk.Frame(body, bg=theme.PANEL_DARK)
+        sync_row.pack(fill="x", pady=(P(12), 0))
+        self.sync_button = widgets.button(sync_row, "", self._sync_programs, font=fonts["button"], padx=P(14), pady=P(8))
+        self.sync_button.pack(side="left")
+        self.sync_status = widgets.label(sync_row, "", font=fonts["small"], fg=theme.MUTED, wraplength=P(250),
+                                         justify="left")
+        self.sync_status.pack(side="left", fill="x", expand=True, padx=(P(12), 0))
 
         days = tk.Frame(body, bg=theme.PANEL_DARK)
         days.pack(fill="x", pady=(P(12), 0))
@@ -269,8 +279,37 @@ class SettingsDialog(_Dialog):
         self.program_error.configure(text="")
         self.program_title_entry.clear()
         # Lo más común es cargar el programa siguiente a continuación.
-        self.program_start_var.set(f"{min(program.end, 23):02d}")
-        self.program_end_var.set(f"{min(program.end + 1, 24):02d}")
+        end_hour = program.end // 60
+        self.program_start_var.set(f"{min(end_hour, 23):02d}")
+        self.program_end_var.set(f"{min(end_hour + 1, 24):02d}")
+
+    def _sync_programs(self) -> None:
+        if self.app.programs and not messagebox.askyesno(
+                "Sincronizar programación",
+                f"La parrilla actual ({len(self.app.programs)} programas) se reemplazará por la publicada en "
+                f"{schedule_sync.SCHEDULE_URL}.\n¿Continuar?", parent=self):
+            return
+        self.app.sync_programs()
+
+    def refresh_sync(self) -> None:
+        if not self.winfo_exists():
+            return
+        running = self.app.sync_running
+        self.sync_button.configure(text="Sincronizando…" if running else "⟳   Sincronizar desde la web",
+                                   state="disabled" if running else "normal")
+        message = self.app.sync_message
+        if not message:
+            synced = self.app.programs_synced_at
+            if synced:
+                try:
+                    stamp = model.format_log_stamp(datetime.fromisoformat(synced))
+                except ValueError:
+                    stamp = synced
+                message = f"Última sincronización: {stamp}"
+            else:
+                message = "radioluz937fm.com/weekSchedule"
+        failed = message.startswith("No se pudo")
+        self.sync_status.configure(text=message, fg=theme.DANGER if failed else theme.MUTED)
 
     def _copy_day(self) -> None:
         targets = dict(COPY_TARGETS)[self.copy_target_var.get()]

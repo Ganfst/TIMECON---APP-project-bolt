@@ -13,27 +13,28 @@ class ScheduleTests(unittest.TestCase):
 
     def test_default_blocks(self):
         labels = [segment.label for segment in self.segments]
-        self.assertEqual(labels, ["EN AIRE", "PROMOS", "CIERRE", "CORTE"])
+        self.assertEqual(labels, ["EN AIRE", "CIERRE", "CORTE Y PROMOCIONES"])
         kinds = [segment.kind for segment in self.segments]
-        self.assertEqual(kinds, ["sums", "sums", "sums", "separate"])
+        self.assertEqual(kinds, ["sums", "sums", "separate"])
+        self.assertEqual([segment.duration // 60 for segment in self.segments], [50, 5, 5])
 
     def test_chain_places_segments_back_to_back(self):
         schedule = model.build_schedule(self.segments, BASE, BASE)
         self.assertEqual([item.start for item in schedule], [
-            BASE, BASE + timedelta(minutes=45), BASE + timedelta(minutes=50), BASE + timedelta(minutes=55),
+            BASE, BASE + timedelta(minutes=50), BASE + timedelta(minutes=55),
         ])
         # Los bloques por defecto llenan la hora justa, porque la secuencia se reinicia en cada hora en punto.
         self.assertEqual(schedule[-1].end, BASE + timedelta(minutes=60))
 
     def test_remaining_follows_the_clock(self):
         schedule = model.build_schedule(self.segments, BASE, BASE)
-        self.assertEqual(schedule[0].remaining, 45 * 60)
+        self.assertEqual(schedule[0].remaining, 50 * 60)
         later = model.build_schedule(self.segments, BASE, BASE + timedelta(seconds=1))
-        self.assertEqual(later[0].remaining, 45 * 60 - 1)
-        self.assertEqual(model.format_clock(later[0].remaining), "44:59")
+        self.assertEqual(later[0].remaining, 50 * 60 - 1)
+        self.assertEqual(model.format_clock(later[0].remaining), "49:59")
 
     def test_last_ten_seconds_flash(self):
-        now = BASE + timedelta(minutes=44, seconds=50)
+        now = BASE + timedelta(minutes=49, seconds=50)
         schedule = model.build_schedule(self.segments, BASE, now)
         active = model.find_active(schedule)
         self.assertEqual(active.label, "EN AIRE")
@@ -44,40 +45,40 @@ class ScheduleTests(unittest.TestCase):
         self.assertFalse(model.is_flashing(0))
 
     def test_chains_automatically_into_next_block(self):
-        now = BASE + timedelta(minutes=45, microseconds=500_000)
+        now = BASE + timedelta(minutes=50, microseconds=500_000)
         schedule = model.build_schedule(self.segments, BASE, now)
         active = model.find_active(schedule)
-        self.assertEqual(active.label, "PROMOS")
+        self.assertEqual(active.label, "CIERRE")
         self.assertEqual(active.remaining, 299)
         self.assertTrue(schedule[0].is_done)
         self.assertTrue(schedule[2].is_pending)
-        self.assertEqual(model.next_after(schedule, active).label, "CIERRE")
+        self.assertEqual(model.next_after(schedule, active).label, "CORTE Y PROMOCIONES")
         self.assertEqual(model.schedule_status(schedule), "running")
 
     def test_independent_block_takes_its_turn_but_not_the_total(self):
         now = BASE + timedelta(minutes=56)
         schedule = model.build_schedule(self.segments, BASE, now)
         active = model.find_active(schedule)
-        self.assertEqual(active.label, "CORTE")
+        self.assertEqual(active.label, "CORTE Y PROMOCIONES")
         self.assertFalse(active.is_chain)
         self.assertEqual(model.chain_remaining(schedule), 0)
         self.assertEqual(model.chain_duration(self.segments), 55 * 60)
         self.assertIsNone(model.next_after(schedule, active))
 
     def test_pending_sections_keep_their_full_time(self):
-        now = BASE + timedelta(minutes=44, seconds=55)
+        now = BASE + timedelta(minutes=49, seconds=55)
         schedule = model.build_schedule(self.segments, BASE, now)
-        self.assertEqual([item.remaining for item in schedule], [5, 300, 300, 300])
-        self.assertEqual(schedule[3].progress, 0.0)
-        # En cadena: 5 s de EN AIRE + PROMOS + CIERRE completos; CORTE (independiente) no se suma.
-        self.assertEqual(model.chain_remaining(schedule), 5 + 300 + 300)
+        self.assertEqual([item.remaining for item in schedule], [5, 300, 300])
+        self.assertEqual(schedule[2].progress, 0.0)
+        # En cadena: 5 s de EN AIRE + CIERRE completo; el corte (independiente) no se suma.
+        self.assertEqual(model.chain_remaining(schedule), 5 + 300)
         self.assertEqual(model.chain_remaining(model.build_schedule(self.segments, BASE, BASE)), 55 * 60)
 
     def test_independent_counter_only_moves_on_its_turn(self):
         before = model.build_schedule(self.segments, BASE, BASE + timedelta(minutes=30))
-        self.assertEqual(before[3].remaining, 300)
+        self.assertEqual(before[2].remaining, 300)
         during = model.build_schedule(self.segments, BASE, BASE + timedelta(minutes=57))
-        self.assertEqual(during[3].remaining, 180)
+        self.assertEqual(during[2].remaining, 180)
 
     def test_status_pending_and_done(self):
         before = model.build_schedule(self.segments, BASE, BASE - timedelta(minutes=1))
@@ -88,7 +89,7 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(model.schedule_status([]), "empty")
 
     def test_progress(self):
-        now = BASE + timedelta(minutes=22, seconds=30)
+        now = BASE + timedelta(minutes=25)
         schedule = model.build_schedule(self.segments, BASE, now)
         self.assertAlmostEqual(schedule[0].progress, 50.0)
 
@@ -138,6 +139,32 @@ class SegmentTests(unittest.TestCase):
         self.assertEqual(model.clamp_int(4.9, 1, 10), 4)
 
 
+class ClockReadingTests(unittest.TestCase):
+    def setUp(self):
+        self.segments = model.default_segments()
+
+    def reading(self, minutes: int, seconds: int = 0):
+        return model.clock_reading(model.build_schedule(self.segments, BASE, BASE + timedelta(minutes=minutes, seconds=seconds)))
+
+    def test_chain_time_does_not_restart_between_chained_blocks(self):
+        start = self.reading(0)
+        self.assertEqual((start.seconds, start.progress, start.separate), (55 * 60, 0.0, False))
+        self.assertEqual(self.reading(49, 59).seconds, 5 * 60 + 1)
+        self.assertEqual(self.reading(50).seconds, 5 * 60)  # entra CIERRE: el reloj sigue igual
+        self.assertAlmostEqual(self.reading(22, 30).progress, 22.5 / 55 * 100)
+
+    def test_independent_section_shows_its_own_counter(self):
+        corte = self.reading(57)
+        self.assertEqual((corte.seconds, corte.separate), (3 * 60, True))
+        self.assertAlmostEqual(corte.progress, 40.0)
+        self.assertEqual(self.reading(60).seconds, 0)  # todo terminó
+
+    def test_pending_shows_the_whole_chain(self):
+        schedule = model.build_schedule(self.segments, BASE, BASE - timedelta(minutes=5))
+        self.assertEqual(model.clock_reading(schedule).seconds, 55 * 60)
+        self.assertEqual(model.clock_reading([]).seconds, 0)
+
+
 class HourFitTests(unittest.TestCase):
     def test_default_sequence_fits_the_hour(self):
         segments = model.default_segments()
@@ -149,7 +176,7 @@ class HourFitTests(unittest.TestCase):
         segments[0] = model.with_minutes(segments[0], 55)
         self.assertEqual(segments[0].label, "EN AIRE")
         self.assertEqual(segments[0].duration, 55 * 60)
-        self.assertEqual([segment.label for segment in model.cut_by_hour(segments)], ["CIERRE", "CORTE"])
+        self.assertEqual([segment.label for segment in model.cut_by_hour(segments)], ["CORTE Y PROMOCIONES"])
         self.assertEqual(model.with_minutes(segments[0], "0").duration, 60)
 
 

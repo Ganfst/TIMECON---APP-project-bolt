@@ -10,28 +10,31 @@ Aplicación de escritorio en Python que muestra una cuenta regresiva de los bloq
 
 El contador **no se inicia manualmente ni decrementa por sí solo**: calcula el tiempo restante comparando la hora actual del sistema con la hora de inicio y fin de cada sección programada.
 
-**Ejemplo:** una programación "EN AIRE" comienza a las 7:00 en punto y dura 45 minutos → el reloj muestra `45:00` y baja (`44:59`, `44:58`...) conforme avanza la hora real. Al llegar a `00:00`, pasa automáticamente a la siguiente sección (p. ej. PROMOS de 5 min) sin intervención del operador.
+**Ejemplo:** una programación "EN AIRE" comienza a las 7:00 en punto y dura 50 minutos, seguida de 5 minutos de CIERRE en cadena → el reloj muestra el tiempo en cadena, `55:00`, y baja (`54:59`, `54:58`...) conforme avanza la hora real. A las 7:50 entra CIERRE sin que el número salte; a las 7:55 la cadena llega a `00:00` y empieza CORTE Y PROMOCIONES (5 min), sin intervención del operador.
 
 **Cada hora vuelve a empezar**, como en el `timecon.exe` original de cabina: a las 8:00 en punto la secuencia arranca de nuevo desde EN AIRE, sin tocar nada.
 
 ## Funcionalidades
 
 ### Reloj central
-- Anillo de progreso que cambia de color según el bloque activo.
-- Minutos y segundos restantes en tipografía grande (64–110 px, hasta 160 px en pantalla completa). El tamaño se ajusta para que los dígitos nunca se salgan del anillo.
-- **Alerta de últimos 10 segundos:** el reloj parpadea en rojo, el anillo brilla con un halo que pulsa y el texto alterna entre blanco y rojo cada medio segundo hasta llegar a 0, para llamar la atención del conductor. Se puede desactivar en Configuración.
+- Anillo de progreso que cambia de color según el bloque activo y avanza con toda la cadena.
+- **Tiempo en cadena** en el centro del anillo: lo que falta de las secciones en cadena. Al pasar de una sección en cadena a la siguiente el número no se reinicia; solo cambian el color, el nombre bajo el número y el panel "Bloque activo". Mientras corre una sección independiente (p. ej. CORTE) muestra su propio contador con la etiqueta "INDEPENDIENTE".
+- Lo que falta del bloque activo se ve en el panel "Bloque activo" y en "Resta del bloque", junto a "Reiniciar al inicio".
+- Minutos y segundos en tipografía grande (64–110 px, hasta 160 px en pantalla completa). El tamaño se ajusta para que los dígitos nunca se salgan del anillo.
+- **Alerta de últimos 10 segundos** antes de que el número del centro llegue a 0 (fin de la cadena y fin de cada sección independiente): el reloj parpadea en rojo, el anillo brilla con un halo que pulsa y el texto alterna entre blanco y rojo cada medio segundo hasta llegar a 0, para llamar la atención del conductor. Se puede desactivar en Configuración.
 
 ### Programas por hora (parrilla semanal)
-- Cada día de la semana tiene su propia parrilla de programas, cargada **por rangos de horas en punto** (ej.: lunes 06:00–10:00 "Buenos Días Luz", 10:00–11:00 "Palabra de Vida"). Títulos de hasta 40 caracteres.
+- Cada día de la semana tiene su propia parrilla de programas, por rangos horarios (ej.: lunes 06:00–10:00 "Buenos Días Luz", martes 07:30–08:00 "Vida Consagrada"). Títulos de hasta 40 caracteres.
+- **Sincronizar desde la web:** botón manual en Configuración que descarga la programación semanal publicada en `https://radioluz937fm.com/weekSchedule` (igual que el ajax de la página: abre la portada para obtener la sesión y el token CSRF y luego hace el POST). Reemplaza la parrilla local (pide confirmación si ya hay programas), ignora los programas inactivos o borrados, une en un título los que comparten horario exacto (ej. "Santa Eucaristía / Misa Catedral") y avisa de los que se cruzan. La descarga corre en segundo plano, no congela el reloj, y si falla la parrilla no se toca. Se guarda la fecha de la última sincronización.
 - El título del programa en curso aparece en grande sobre el reloj, con su horario, en todos los modos (también en compacto y pantalla completa), y en el título de la ventana. Se achica para caber en una línea.
 - Las horas sin programa muestran "Sin programa asignado". Si la parrilla está vacía, no se muestra nada y la pantalla queda como antes.
 - El panel izquierdo muestra el **programa siguiente** (hoy, mañana o el día que corresponda).
-- En Configuración: botones por día (Lun…Dom), lista de programas del día con "Eliminar", campos Desde/Hasta/Título, aviso si un programa se cruza con otro, y "Copiar este día a" (lunes a viernes, todos los días o un día concreto; pide confirmación si reemplaza programas).
+- En Configuración: botones por día (Lun…Dom), lista de programas del día con "Eliminar", campos Desde/Hasta/Título para cargar a mano en horas en punto, aviso si un programa se cruza con otro, y "Copiar este día a" (lunes a viernes, todos los días o un día concreto; pide confirmación si reemplaza programas).
 - Un programa que pasa la medianoche se carga en dos partes (22–24 un día y 00–02 el siguiente).
 - Cada cambio de programa queda en el historial.
 
 ### Secciones de programación
-- Cuatro bloques por hora de referencia: **EN AIRE (45 min), PROMOS (5), CIERRE (5), CORTE (5)**, que llenan la hora justa.
+- Tres bloques por hora: **EN AIRE (50 min) y CIERRE (5) en cadena, y CORTE Y PROMOCIONES (5) independiente**, que llenan la hora justa.
 - **Reinicio automático en cada hora en punto:** la secuencia vuelve a empezar desde la primera sección. Si las secciones suman más de 60 minutos, las últimas no alcanzan a salir; Configuración lo avisa.
 - Dos tipos de sección:
   - **En cadena:** se suman al total de la programación y se enlazan automáticamente. Al consumirse el tiempo de una, arranca la siguiente de inmediato, sin modificar el tiempo; solo cambia el color y el nombre del panel informativo inferior.
@@ -83,7 +86,7 @@ El contador **no se inicia manualmente ni decrementa por sí solo**: calcula el 
 | 5 | Sep 14, 10:55 AM | Verificación y cierre de la versión web: monitor de audio, reloj principal y secundario, historial con CSV, interruptores funcionales, emisora editable, preferencias persistentes. |
 | 6 | Sep 17 | Transcripción completa a Python/Tkinter (sin TypeScript ni navegador), con la lógica separada de la interfaz y pruebas automáticas. |
 | 7 | Sep 25 | Revisión contra este documento y eliminación de la versión web (HTML, TypeScript, Node). Textos al tamaño de lectura a distancia; reloj 64–110 px y 160 px en pantalla completa; fecha/hora dentro de 20–32 y 40–68 px. Halo pulsante en la alerta. Interruptores reales. Desplazamiento en paneles y área central para que nada se corte. Apilado en ventanas angostas y ventana maximizada al abrir. Corregido: "Cadena total" sumaba tiempo de espera y los contadores independientes bajaban antes de su turno. Corregido: el texto de ayuda del campo de nombre se agregaba como sección. Nombres con largo máximo. Lanzador con doble clic. 49 pruebas automáticas. |
-| 8 | Sep 26 | Revisión de `ref/timecon.exe` (timer original por minuto de la hora, se repite cada hora). Parrilla semanal: título del programa de cada hora sobre el reloj, distinto para cada día, cargado por rangos, con copia entre días y programa siguiente. La secuencia se reinicia sola en cada hora en punto. Bloques por defecto de 45/5/5/5 min para llenar la hora; minutos editables por sección y aviso si la secuencia pasa de 60 min. 64 pruebas automáticas. |
+| 8 | Sep 26 | Revisión de `ref/timecon.exe` (timer original por minuto de la hora, se repite cada hora). Parrilla semanal: título del programa de cada hora sobre el reloj, distinto para cada día, cargado por rangos, con copia entre días y programa siguiente. La secuencia se reinicia sola en cada hora en punto. Minutos editables por sección y aviso si la secuencia pasa de 60 min. El centro del anillo muestra el tiempo en cadena (no se reinicia entre secciones en cadena); la alerta de 10 s acompaña a ese número. Bloques de la hora: EN AIRE 50 + CIERRE 5 en cadena y CORTE Y PROMOCIONES 5 (sin PROMOS aparte). Botón "Sincronizar desde la web" con la programación de radioluz937fm.com; programas con horario en minutos (07:30). 79 pruebas automáticas. |
 
 ## Stack técnico
 
@@ -103,6 +106,7 @@ Todo el código está en `python/`:
 - `radio_timer/dialogs.py` — ventanas de configuración e historial
 - `radio_timer/widgets.py` — botones, campos, interruptores y áreas con desplazamiento
 - `radio_timer/storage.py`, `radio_timer/activity_log.py` — preferencias (con la parrilla) e historial CSV
+- `radio_timer/schedule_sync.py` — descarga de la programación semanal desde la web de la emisora
 - `tests/` — pruebas de la lógica, de los tamaños y de la interfaz
 
 ## Comandos
@@ -111,7 +115,7 @@ Desde la carpeta `python`:
 
 ```
 python run.py                      # abrir la aplicación
-python run.py --hora 10:44:50      # simular la hora (probar la alerta de 10 s)
+python run.py --hora 10:54:50      # simular la hora (probar la alerta de 10 s antes del corte)
 python run.py --hora 10:59:55      # ver el cambio de hora y de programa
 python run.py --compacto           # abrir en modo compacto
 python run.py --pantalla-completa  # abrir en pantalla completa

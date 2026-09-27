@@ -1,11 +1,12 @@
 """Pruebas de la interfaz: requieren un entorno con pantalla (Tk)."""
 import tempfile
+import time
 import tkinter as tk
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from radio_timer import layout, widgets
+from radio_timer import layout, model, schedule_sync, widgets
 from radio_timer.app import RadioTimerApp
 from radio_timer.storage import Preferences, load_preferences
 
@@ -18,7 +19,7 @@ class FakeClock:
         return self.moment
 
 
-BASE = datetime(2026, 9, 14, 10, 44, 50)
+BASE = datetime(2026, 9, 14, 10, 49, 50)
 
 
 class AppSmokeTests(unittest.TestCase):
@@ -53,39 +54,65 @@ class AppSmokeTests(unittest.TestCase):
 
     # --------------------------------------------------------- reloj real ---
 
-    def test_alert_then_automatic_chain(self):
+    def _clock_text(self, key: str) -> str:
+        return self.app.clock_canvas.itemcget(self.app._clock_items[key], "text")
+
+    def test_center_shows_chain_time_across_blocks(self):
         app = self.app
         self.assertEqual(app.program_start, datetime(2026, 9, 14, 10, 0, 0))
         self.assertEqual(app.active.label, "EN AIRE")
         self.assertEqual(app.remaining, 10)
-        self.assertTrue(app.flashing)
-        caption = app.clock_canvas.itemcget(app._clock_items["caption"], "text")
-        self.assertEqual(caption, "ATENCIÓN")
-        self.assertEqual(app.clock_canvas.itemcget(app._clock_items["glow"], "state"), "normal")
+        # 10 s de EN AIRE + CIERRE; el cambio de bloque no reinicia el reloj ni lo hace parpadear.
+        self.assertEqual(self._clock_text("time"), "05:10")
+        self.assertEqual(self._clock_text("caption"), "TIEMPO EN CADENA")
+        self.assertFalse(app.flashing)
         self.assertEqual(app.log.entries[0].title, "Entrada a bloque: EN AIRE")
 
         self.clock.moment = BASE + timedelta(seconds=10, microseconds=500_000)
         app.step(self.clock.moment)
-        self.assertEqual(app.active.label, "PROMOS")
+        self.assertEqual(app.active.label, "CIERRE")
         self.assertEqual(app.remaining, 299)
+        self.assertEqual(self._clock_text("time"), "04:59")
+        self.assertEqual(self._clock_text("sub"), "CIERRE")
+        self.assertEqual(app.block_left_label.cget("text"), "04:59")
+        self.assertEqual(app.active_remaining.cget("text"), "04:59")
+        self.assertEqual(app.next_segment.label, "CORTE Y PROMOCIONES")
+        self.assertEqual(app.log.entries[0].title, "Entrada a bloque: CIERRE")
+        self.assertEqual(app.log.entries[0].detail, "Cambio automático por reloj")
+        self.assertEqual(app.active_title.cget("text"), "CIERRE")
+        self.assertEqual(app.active_block.cget("bg"), "#238ac2")
+
+    def test_alert_before_chain_ends_then_independent_counter(self):
+        app = self.app
+        app.step(datetime(2026, 9, 14, 10, 54, 50))
+        self.assertEqual(app.active.label, "CIERRE")
+        self.assertEqual(self._clock_text("time"), "00:10")
+        self.assertTrue(app.flashing)
+        self.assertEqual(self._clock_text("caption"), "ATENCIÓN")
+        self.assertEqual(app.clock_canvas.itemcget(app._clock_items["glow"], "state"), "normal")
+
+        # El corte es independiente: la cadena ya terminó y el reloj muestra su propio contador.
+        app.step(datetime(2026, 9, 14, 10, 55, 0, 500_000))
+        self.assertEqual(app.active.label, "CORTE Y PROMOCIONES")
+        self.assertEqual(self._clock_text("time"), "04:59")
+        self.assertEqual(self._clock_text("caption"), "INDEPENDIENTE")
         self.assertFalse(app.flashing)
         self.assertEqual(app.clock_canvas.itemcget(app._clock_items["glow"], "state"), "hidden")
-        self.assertEqual(app.clock_canvas.itemcget(app._clock_items["time"], "text"), "04:59")
-        self.assertEqual(app.next_segment.label, "CIERRE")
-        self.assertEqual(app.log.entries[0].title, "Entrada a bloque: PROMOS")
-        self.assertEqual(app.log.entries[0].detail, "Cambio automático por reloj")
-        self.assertEqual(app.active_title.cget("text"), "PROMOS")
-        self.assertEqual(app.active_block.cget("bg"), "#ec8d2d")
+        app.step(datetime(2026, 9, 14, 10, 59, 55))
+        self.assertTrue(app.flashing)
 
     def test_flash_alternates_every_half_second(self):
         app = self.app
         colors = set()
         for tenths in range(0, 10, 5):
-            app.step(BASE + timedelta(milliseconds=tenths * 100))
+            app.step(datetime(2026, 9, 14, 10, 54, 50) + timedelta(milliseconds=tenths * 100))
             colors.add(app.clock_canvas.itemcget(app._clock_items["time"], "fill"))
         self.assertEqual(len(colors), 2)
 
     def test_alert_can_be_disabled(self):
+        self.clock.moment = datetime(2026, 9, 14, 10, 54, 50)
+        self.app.step(self.clock.moment)
+        self.assertTrue(self.app.flashing)
         self.app.set_alert_enabled(False)
         self.assertFalse(self.app.flashing)
         self.assertFalse(load_preferences(self.prefs_path).alert_enabled)
@@ -113,7 +140,7 @@ class AppSmokeTests(unittest.TestCase):
         app.step(self.clock.moment)
         self.assertEqual(app.program_start, datetime(2026, 9, 14, 11, 0, 0))
         self.assertEqual(app.active.label, "EN AIRE")
-        self.assertEqual(app.remaining, 45 * 60 - 1)
+        self.assertEqual(app.remaining, 50 * 60 - 1)
         self.assertEqual(app.program_title.cget("text"), "Música del Recuerdo")
         self.assertEqual(app.start_chip.cget("text"), "11:00 hrs")
         titles = [entry.title for entry in app.log.entries[:3]]
@@ -183,6 +210,64 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(dialog.program_day_title.cget("text"), "Domingo")
         self.assertEqual(len(load_preferences(self.prefs_path).programs), 5)
 
+    def _wait_for_sync(self):
+        deadline = time.monotonic() + 5
+        while self.app.sync_running and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.02)
+        self.assertFalse(self.app.sync_running)
+
+    def test_sync_replaces_the_grid_from_the_web(self):
+        app = self.app
+        app.add_program(0, 6, 7, "Programa local")
+        dialog = app.open_settings()
+        self.root.update_idletasks()
+        self.assertIn("weekSchedule", dialog.sync_status.cget("text"))
+
+        downloaded = schedule_sync.parse_week_schedule({
+            "Lunes": [{"name": "Cada Mañana", "start_time": "10:00", "end_time": "11:00", "is_active": True},
+                      {"name": "Santa Eucaristía", "start_time": "11:00", "end_time": "12:00", "is_active": True}],
+            "Martes": [{"name": "Vida Consagrada", "start_time": "07:30", "end_time": "08:00", "is_active": True}],
+        })
+        self.assertTrue(app.sync_programs(fetch=lambda: downloaded))
+        self.assertFalse(app.sync_programs(fetch=lambda: downloaded))  # ya hay una en curso
+        self.assertEqual(dialog.sync_button.cget("state"), "disabled")
+        self._wait_for_sync()
+
+        self.assertEqual(sorted(p.title for p in app.programs), ["Cada Mañana", "Santa Eucaristía", "Vida Consagrada"])
+        self.assertEqual(app.program_title.cget("text"), "Cada Mañana")  # BASE: lunes 10:49
+        self.assertEqual(dialog.sync_button.cget("state"), "normal")
+        self.assertEqual(dialog.sync_status.cget("text"), "3 programas descargados")
+        stored = load_preferences(self.prefs_path)
+        self.assertEqual(len(stored.programs), 3)
+        self.assertTrue(stored.programs_synced_at.startswith("2026-09-14T10:49"))
+        self.assertEqual([entry.title for entry in app.log.entries[:2]],
+                         ["Programa: Cada Mañana", "Parrilla sincronizada con la web"])
+
+    def test_sync_error_keeps_the_grid(self):
+        app = self.app
+        app.add_program(0, 6, 7, "Programa local")
+        dialog = app.open_settings()
+
+        def failing():
+            raise schedule_sync.SyncError("No se pudo conectar con radioluz937fm.com: sin red")
+
+        app.sync_programs(fetch=failing)
+        self._wait_for_sync()
+        self.assertEqual([p.title for p in app.programs], ["Programa local"])
+        self.assertIn("sin red", dialog.sync_status.cget("text"))
+        self.assertEqual(dialog.sync_status.cget("fg"), "#d34c62")
+        self.assertEqual(app.log.entries[0].title, "Sincronización fallida")
+
+    def test_half_hour_program_changes_title_on_the_minute(self):
+        app = self.app
+        app.programs = [model.make_program(0, 10 * 60 + 50, 11 * 60, "Media hora")]
+        app._programs_changed()
+        self.assertEqual(app.program_title.cget("text"), "Sin programa asignado")  # 10:49:50
+        app.step(datetime(2026, 9, 14, 10, 50, 0))
+        self.assertEqual(app.program_title.cget("text"), "Media hora")
+        self.assertEqual(app.program_caption.cget("text"), "PROGRAMA  ·  10:50–11:00")
+
     def test_section_minutes_and_hour_warning(self):
         app = self.app
         dialog = app.open_settings()
@@ -193,12 +278,12 @@ class AppSmokeTests(unittest.TestCase):
         dialog._apply_minutes("s1", variable)
         self.assertEqual(app.segments[0].duration, 55 * 60)
         self.assertEqual(app.segments[0].label, "EN AIRE")
-        self.assertIn("CIERRE, CORTE", dialog.overflow_label.cget("text"))
+        self.assertIn("CORTE Y PROMOCIONES no alcanza", dialog.overflow_label.cget("text"))
         self.assertEqual(load_preferences(self.prefs_path).segments[0].duration, 55 * 60)
-        variable.set("45")
+        variable.set("50")
         dialog._queue_minutes("s1", variable)  # como al pulsar la flecha: espera una pausa
         dialog.close()  # los minutos pendientes se aplican al cerrar
-        self.assertEqual(app.segments[0].duration, 45 * 60)
+        self.assertEqual(app.segments[0].duration, 50 * 60)
 
     # ------------------------------------------------------ tamaños del doc ---
 
@@ -258,7 +343,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(app.mode, layout.MODE_STACKED)
         self.assertIs(app.left_panel.master, app.stage)
         self.assertEqual(int(app.left_panel.grid_info()["row"]), 6)
-        self.assertEqual(len(app._timeline_rows), 4)
+        self.assertEqual(len(app._timeline_rows), 3)
         self.assertEqual(app.start_chip.cget("text"), "10:00 hrs")
         self.assertEqual(app._topbar_mode, "wrapped")
 
@@ -304,13 +389,13 @@ class AppSmokeTests(unittest.TestCase):
         app.set_station("Radio Prueba 99.1")
         segment = app.add_segment("prueba", "3", "separate")
         self.assertEqual(segment.label, "PRUEBA")
-        self.assertEqual(len(app.schedule), 5)
+        self.assertEqual(len(app.schedule), 4)
         self.assertEqual(len(app._separate_cards), 2)
         stored = load_preferences(self.prefs_path)
         self.assertEqual(stored.station, "Radio Prueba 99.1")
         self.assertEqual(stored.segments[-1].label, "PRUEBA")
         self.assertTrue(app.delete_segment(segment.id))
-        self.assertEqual(len(app.schedule), 4)
+        self.assertEqual(len(app.schedule), 3)
         self.assertFalse(app.delete_segment("no-existe"))
 
         start = app.apply_start_time("7", "30")
@@ -328,7 +413,7 @@ class AppSmokeTests(unittest.TestCase):
         self.assertTrue(dialog.name_entry.showing_placeholder)
         self.assertEqual(dialog.name_entry.value(), "")
         dialog._add_segment()
-        self.assertEqual(len(app.segments), 4)
+        self.assertEqual(len(app.segments), 3)
         self.assertEqual(dialog.error_label.cget("text"), "La sección necesita un nombre")
 
         dialog.name_entry.set_value("entrevista")

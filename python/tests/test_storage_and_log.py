@@ -25,7 +25,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(loaded.station, "Radio Prueba 99.1")
         self.assertFalse(loaded.alert_enabled)
         self.assertTrue(loaded.sound_enabled)
-        self.assertEqual([s.label for s in loaded.segments], ["EN AIRE", "PROMOS", "CIERRE", "CORTE", "PRUEBA"])
+        self.assertEqual([s.label for s in loaded.segments], ["EN AIRE", "CIERRE", "CORTE Y PROMOCIONES", "PRUEBA"])
         self.assertEqual(loaded.segments[-1].duration, 180)
 
     def test_programs_round_trip_and_bad_entries_are_skipped(self):
@@ -49,17 +49,17 @@ class StorageTests(unittest.TestCase):
     def test_missing_file_gives_defaults(self):
         prefs = load_preferences(self.path)
         self.assertEqual(prefs.station, "Radio Luz 93.7 FM")
-        self.assertEqual(len(prefs.segments), 4)
+        self.assertEqual(len(prefs.segments), 3)
         self.assertTrue(prefs.alert_enabled)
 
     def test_corrupt_or_partial_file_is_tolerated(self):
         self.path.parent.mkdir(parents=True)
         self.path.write_text("{no es json", encoding="utf-8")
-        self.assertEqual(len(load_preferences(self.path).segments), 4)
+        self.assertEqual(len(load_preferences(self.path).segments), 3)
         self.path.write_text(json.dumps({"station": "  ", "segments": [{"bad": True}], "alertEnabled": "sí"}), encoding="utf-8")
         prefs = load_preferences(self.path)
         self.assertEqual(prefs.station, "Radio Luz 93.7 FM")
-        self.assertEqual(len(prefs.segments), 4)
+        self.assertEqual(len(prefs.segments), 3)
         self.assertTrue(prefs.alert_enabled)
 
     def test_web_version_json_is_compatible(self):

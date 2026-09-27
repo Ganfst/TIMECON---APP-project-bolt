@@ -104,12 +104,12 @@ class Segment:
 
 
 def default_segments() -> list[Segment]:
-    """Los cuatro bloques por hora de referencia; suman 60 minutos porque la secuencia se reinicia cada hora."""
+    """Los bloques de la hora en Radio Luz: 50 + 5 en cadena y 5 de corte; suman 60 porque se reinicia cada hora."""
     return [
-        Segment("s1", "EN AIRE", "Programa en vivo", 45 * 60, "#0e8f88", "#f1fffc", KIND_CHAIN),
-        Segment("s2", "PROMOS", "Avances y menciones", 5 * 60, "#ec8d2d", "#fffaf1", KIND_CHAIN),
+        Segment("s1", "EN AIRE", "Programa en vivo", 50 * 60, "#0e8f88", "#f1fffc", KIND_CHAIN),
         Segment("s3", "CIERRE", "Cierre de bloque", 5 * 60, "#238ac2", "#f1f9ff", KIND_CHAIN),
-        Segment("s4", "CORTE", "Corte comercial", 5 * 60, "#d34c62", "#fff4f5", KIND_SEPARATE),
+        Segment("s4", "CORTE Y PROMOCIONES", "Corte comercial y promociones", 5 * 60, "#d34c62", "#fff4f5",
+                KIND_SEPARATE),
     ]
 
 
@@ -234,6 +234,27 @@ def chain_duration(segments: Sequence[Segment]) -> int:
     return sum(segment.duration for segment in segments if segment.is_chain)
 
 
+@dataclass(frozen=True)
+class ClockReading:
+    """Lo que muestra el reloj central: segundos, avance del anillo (0 a 100) y si es una sección independiente."""
+
+    seconds: int
+    progress: float
+    separate: bool
+
+
+def clock_reading(schedule: Sequence[ScheduledSegment]) -> ClockReading:
+    """El reloj central muestra el tiempo en cadena: no se reinicia al pasar de una sección en cadena a la
+    siguiente. Mientras corre una sección independiente (que no se suma a la cadena) muestra su propio contador."""
+    active = find_active(schedule)
+    if active is not None and not active.is_chain:
+        return ClockReading(active.remaining, active.progress, True)
+    total = sum(item.duration for item in schedule if item.is_chain)
+    remaining = chain_remaining(schedule)
+    progress = (total - remaining) / total * 100 if total else 0.0
+    return ClockReading(remaining, progress, False)
+
+
 def sequence_duration(segments: Sequence[Segment]) -> int:
     """Duración de toda la secuencia, en cadena e independientes (cada una espera su turno)."""
     return sum(segment.duration for segment in segments)
@@ -292,25 +313,29 @@ def new_segment(label: str, minutes: int, kind: str, index: int) -> Segment:
 
 # ------------------------------------------------------ parrilla semanal ---
 
+DAY_MINUTES = 24 * 60
+
+
 @dataclass(frozen=True)
 class Program:
-    """Un programa de la parrilla: un día de la semana y un rango de horas en punto."""
+    """Un programa de la parrilla: un día de la semana y un horario (minutos desde la medianoche)."""
 
     id: str
     day: int     # 0 = lunes … 6 = domingo
-    start: int   # hora de inicio, 0 a 23
-    end: int     # hora de fin (no incluida), 1 a 24
+    start: int   # minuto de inicio, 0 a 1439 (07:30 = 450)
+    end: int     # minuto de fin (no incluido), 1 a 1440
     title: str
 
     @property
     def hours_label(self) -> str:
-        return f"{format_hour(self.start)}–{format_hour(self.end)}"
+        return f"{format_minutes(self.start)}–{format_minutes(self.end)}"
 
     def contains(self, moment: datetime) -> bool:
-        return moment.weekday() == self.day and self.start <= moment.hour < self.end
+        return moment.weekday() == self.day and self.start <= moment.hour * 60 + moment.minute < self.end
 
     def to_dict(self) -> dict:
-        return {"id": self.id, "day": self.day, "start": self.start, "end": self.end, "title": self.title}
+        return {"id": self.id, "day": self.day, "start": format_minutes(self.start),
+                "end": format_minutes(self.end), "title": self.title}
 
     @classmethod
     def from_dict(cls, data: object) -> "Program":
@@ -320,15 +345,39 @@ class Program:
             program = cls(
                 id=str(data["id"]),
                 day=int(data["day"]),
-                start=int(data["start"]),
-                end=int(data["end"]),
+                start=_stored_minutes(data["start"]),
+                end=_stored_minutes(data["end"]),
                 title=clean_program_title(data["title"]),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"programa inválido: {data!r}") from exc
-        if not (0 <= program.day <= 6 and 0 <= program.start < program.end <= 24 and program.title):
+        if not (0 <= program.day <= 6 and 0 <= program.start < program.end <= DAY_MINUTES and program.title):
             raise ValueError(f"programa inválido: {data!r}")
         return program
+
+
+def _stored_minutes(value: object) -> int:
+    """'07:30' → 450. Un número suelto es una hora en punto (formato de la primera versión de la parrilla)."""
+    if isinstance(value, bool):
+        raise ValueError(value)
+    if isinstance(value, int):
+        return value * 60
+    return parse_clock_minutes(str(value))
+
+
+def parse_clock_minutes(text: str) -> int:
+    """'HH:MM' o 'HH:MM:SS' → minutos desde la medianoche ('24:00' = 1440)."""
+    parts = text.strip().split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(f"hora inválida: {text!r}")
+    hour, minute = int(parts[0]), int(parts[1])
+    if not (0 <= hour <= 24 and 0 <= minute <= 59) or (hour == 24 and minute):
+        raise ValueError(f"hora inválida: {text!r}")
+    return hour * 60 + minute
+
+
+def format_minutes(minutes: int) -> str:
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
 def format_hour(hour: int) -> str:
@@ -339,15 +388,23 @@ def clean_program_title(title: object) -> str:
     return " ".join(str(title).split())[:MAX_PROGRAM_TITLE_LENGTH].strip()
 
 
-def new_program(day: object, start: object, end: object, title: str) -> Program:
+def make_program(day: int, start: int, end: int, title: str) -> Program:
+    """Programa con horario en minutos desde la medianoche."""
     clean_title = clean_program_title(title)
     if not clean_title:
         raise ValueError("El programa necesita un título")
+    if not (0 <= start < end <= DAY_MINUTES):
+        raise ValueError("La hora de fin debe ser posterior a la de inicio")
+    return Program(f"prog-{secrets.token_hex(4)}", clamp_int(day, 0, 6), start, end, clean_title)
+
+
+def new_program(day: object, start: object, end: object, title: str) -> Program:
+    """Programa cargado a mano, en horas en punto."""
     start_hour = clamp_int(start, 0, 23)
     end_hour = clamp_int(end, 1, 24)
-    if end_hour <= start_hour:
+    if end_hour <= start_hour and clean_program_title(title):
         raise ValueError("La hora de fin debe ser posterior a la de inicio")
-    return Program(f"prog-{secrets.token_hex(4)}", clamp_int(day, 0, 6), start_hour, end_hour, clean_title)
+    return make_program(clamp_int(day, 0, 6), start_hour * 60, end_hour * 60, title)
 
 
 def overlapping_program(programs: Sequence[Program], candidate: Program) -> Program | None:
@@ -377,7 +434,7 @@ def next_program(programs: Sequence[Program], moment: datetime) -> tuple[Program
     for offset in range(8):
         day_start = midnight + timedelta(days=offset)
         for program in programs_for_day(programs, day_start.weekday()):
-            begins = day_start + timedelta(hours=program.start)
+            begins = day_start + timedelta(minutes=program.start)
             if begins > moment and (current is None or program.id != current.id):
                 return program, begins
     return None

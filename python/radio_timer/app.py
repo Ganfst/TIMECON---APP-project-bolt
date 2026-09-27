@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import queue
 import sys
 import threading
 import tkinter as tk
@@ -11,7 +12,7 @@ from tkinter import filedialog
 from tkinter import font as tkfont
 from typing import Callable
 
-from . import __version__, layout, model, theme, widgets
+from . import __version__, layout, model, schedule_sync, theme, widgets
 from .activity_log import ActivityLog
 from .dialogs import HistoryDialog, SettingsDialog
 from .storage import Preferences, load_preferences, save_preferences
@@ -106,6 +107,11 @@ class RadioTimerApp:
         self.station = model.clean_station(prefs.station)
         self.segments: list[model.Segment] = list(prefs.segments)
         self.programs: list[model.Program] = list(prefs.programs)
+        self.programs_synced_at = prefs.programs_synced_at
+        self.sync_running = False
+        self.sync_message = ""
+        self._sync_results: queue.Queue = queue.Queue()
+        self._sync_job: str | None = None
         self.alert_enabled = prefs.alert_enabled
         self.sound_enabled = prefs.sound_enabled
 
@@ -118,7 +124,7 @@ class RadioTimerApp:
         self._hour_anchor = self.program_start
         self.program: model.Program | None = None
         self.upcoming: tuple[model.Program, datetime] | None = None
-        self._program_hour: datetime | None = None
+        self._program_minute: datetime | None = None
 
         self.log = ActivityLog(listener=self._on_log_changed)
         self.compact = start_compact
@@ -132,7 +138,8 @@ class RadioTimerApp:
         self.active: model.ScheduledSegment | None = None
         self.next_segment: model.ScheduledSegment | None = None
         self.status = "empty"
-        self.remaining = 0
+        self.remaining = 0  # lo que falta del bloque activo
+        self.reading = model.ClockReading(0, 0.0, False)  # lo que muestra el reloj central
         self.flashing = False
         self.accent = theme.ACCENT_DEFAULT
         self.ring_size = self.px(300)
@@ -412,9 +419,9 @@ class RadioTimerApp:
         self.reset_button.pack(side="left")
         totals = tk.Frame(reset, bg=theme.BG)
         totals.pack(side="right")
-        widgets.label(totals, "TOTAL EN CADENA", font=self.f["caption"], fg=theme.MUTED, anchor="e").pack(anchor="e")
-        self.total_label = widgets.label(totals, "00:00", font=self.f["total"], fg=theme.TEXT_SOFT, anchor="e")
-        self.total_label.pack(anchor="e")
+        widgets.label(totals, "RESTA DEL BLOQUE", font=self.f["caption"], fg=theme.MUTED, anchor="e").pack(anchor="e")
+        self.block_left_label = widgets.label(totals, "00:00", font=self.f["total"], fg=theme.TEXT_SOFT, anchor="e")
+        self.block_left_label.pack(anchor="e")
 
         dt = tk.Frame(stage, bg=theme.PANEL, padx=P(20), pady=P(12), highlightthickness=1, highlightbackground=theme.LINE)
         self._grid_stage_row(dt, 5, P(20))
@@ -895,14 +902,17 @@ class RadioTimerApp:
         hour = model.top_of_hour(now)
         if hour != self._hour_anchor:
             self._restart_for_hour(hour)
-        if hour != self._program_hour:
-            self._update_program(hour)
+        minute = now.replace(second=0, microsecond=0)
+        if minute != self._program_minute:
+            self._update_program(minute)
         self.schedule = model.build_schedule(self.segments, self.program_start, now)
         self.active = model.find_active(self.schedule)
         self.next_segment = model.next_after(self.schedule, self.active)
         self.status = model.schedule_status(self.schedule)
         self.remaining = self.active.remaining if self.active else 0
-        flashing = model.is_flashing(self.remaining, self.alert_enabled)
+        self.reading = model.clock_reading(self.schedule)
+        # La alerta avisa cuando el número del reloj central está por llegar a 0.
+        flashing = model.is_flashing(self.reading.seconds, self.alert_enabled)
         if flashing != self.flashing:
             self._dirty = True
         self.flashing = flashing
@@ -925,9 +935,9 @@ class RadioTimerApp:
         self.log.add("Nueva hora", f"Secuencia reiniciada a las {model.format_time_of_day(hour)}", "Programación",
                      at=self.now)
 
-    def _update_program(self, hour: datetime) -> None:
-        """Programa en curso y siguiente; solo cambian en las horas en punto o al editar la parrilla."""
-        self._program_hour = hour
+    def _update_program(self, minute: datetime) -> None:
+        """Programa en curso y siguiente; solo pueden cambiar de un minuto a otro o al editar la parrilla."""
+        self._program_minute = minute
         self.program = model.program_at(self.programs, self.now)
         self.upcoming = model.next_program(self.programs, self.now)
 
@@ -1010,8 +1020,7 @@ class RadioTimerApp:
     def _update_clock(self, accent: str, flash_phase: bool) -> None:
         canvas = self.clock_canvas
         items = self._clock_items
-        progress = self.active.progress if self.active else 0.0
-        extent = -min(359.9, max(0.0, progress * 3.6))
+        extent = -min(359.9, max(0.0, self.reading.progress * 3.6))
         if extent <= -0.5:
             canvas.itemconfigure(items["arc"], extent=extent, outline=accent, state="normal")
             if self.flashing:
@@ -1022,12 +1031,16 @@ class RadioTimerApp:
         else:
             canvas.itemconfigure(items["arc"], state="hidden")
             canvas.itemconfigure(items["glow"], state="hidden")
-        time_text = model.format_clock(self.remaining)
+        time_text = model.format_clock(self.reading.seconds)
         if self.active is not None:
             sub = self.active.label
         else:
             sub = "COMPLETADO" if self.status == "done" else "EN ESPERA"
-        canvas.itemconfigure(items["caption"], text="ATENCIÓN" if self.flashing else "TIEMPO RESTANTE",
+        if self.flashing:
+            caption = "ATENCIÓN"
+        else:
+            caption = "INDEPENDIENTE" if self.reading.separate else "TIEMPO EN CADENA"
+        canvas.itemconfigure(items["caption"], text=caption,
                              fill=theme.RED if self.flashing else theme.MUTED)
         canvas.itemconfigure(items["time"], text=time_text,
                              font=self.f["clock"] if len(time_text) <= 5 else self.f["clock_long"],
@@ -1116,7 +1129,7 @@ class RadioTimerApp:
         self.active_progress.itemconfigure(self._active_progress_bar, fill=fg)
 
     def _render_center(self, now: datetime) -> None:
-        self.total_label.configure(text=model.format_clock(model.chain_remaining(self.schedule)))
+        self.block_left_label.configure(text=model.format_clock(self.remaining))
         self.zone_label.configure(text=model.utc_offset_label(now))
         self.dt_weekday.configure(text=model.format_weekday_es(now))
         self.dt_date.configure(text=model.format_date_es(now))
@@ -1319,9 +1332,60 @@ class RadioTimerApp:
                      at=self.now)
         self._programs_changed()
 
+    def sync_programs(self, fetch: Callable[[], schedule_sync.SyncResult] = schedule_sync.download_programs) -> bool:
+        """Descarga la parrilla de la web en segundo plano; el resultado se aplica en el hilo de Tk."""
+        if self.sync_running:
+            return False
+        self.sync_running = True
+        self.sync_message = "Descargando la programación…"
+        self._notify_sync()
+
+        def work() -> None:
+            try:
+                self._sync_results.put(fetch())
+            except schedule_sync.SyncError as exc:
+                self._sync_results.put(exc)
+            except Exception as exc:  # cualquier otro fallo no debe dejar el botón bloqueado
+                self._sync_results.put(schedule_sync.SyncError(f"Error inesperado: {exc}"))
+
+        threading.Thread(target=work, daemon=True).start()
+        self._sync_job = self.root.after(150, self._poll_sync)
+        return True
+
+    def _poll_sync(self) -> None:
+        self._sync_job = None
+        try:
+            outcome = self._sync_results.get_nowait()
+        except queue.Empty:
+            self._sync_job = self.root.after(150, self._poll_sync)
+            return
+        self.sync_running = False
+        if isinstance(outcome, schedule_sync.SyncError):
+            self.sync_message = f"No se pudo sincronizar: {outcome}"
+            self.log.add("Sincronización fallida", str(outcome), "Parrilla", at=self.now)
+            self._notify_sync()
+        else:
+            self.apply_synced_programs(outcome)
+
+    def apply_synced_programs(self, result: schedule_sync.SyncResult) -> None:
+        """Reemplaza la parrilla por la descargada de la web."""
+        now = self.clock()
+        self.programs = list(result.programs)
+        self.programs_synced_at = now.isoformat(timespec="seconds")
+        self.sync_message = f"{len(result.programs)} programas descargados"
+        if result.skipped:
+            self.sync_message += f" · {len(result.skipped)} omitidos: " + "; ".join(result.skipped[:3])
+        self.log.add("Parrilla sincronizada con la web", self.sync_message, "Parrilla", at=now)
+        self._programs_changed()
+        self._notify_sync()
+
+    def _notify_sync(self) -> None:
+        if self._settings_dialog is not None and self._settings_dialog.winfo_exists():
+            self._settings_dialog.refresh_sync()
+
     def _programs_changed(self) -> None:
         self.save_preferences()
-        self._program_hour = None
+        self._program_minute = None
         self._dirty = True
         self.step(self.clock())
         self._render_program()
@@ -1332,6 +1396,7 @@ class RadioTimerApp:
 
     def save_preferences(self) -> None:
         prefs = Preferences(station=self.station, segments=list(self.segments), programs=list(self.programs),
+                            programs_synced_at=self.programs_synced_at,
                             alert_enabled=self.alert_enabled, sound_enabled=self.sound_enabled)
         try:
             save_preferences(prefs, self.prefs_path)
@@ -1405,7 +1470,7 @@ class RadioTimerApp:
 
     def shutdown(self) -> None:
         """Cancela las tareas programadas y cierra los diálogos (sin destruir la ventana)."""
-        for attribute in ("_tick_job", "_layout_job"):
+        for attribute in ("_tick_job", "_layout_job", "_sync_job"):
             job = getattr(self, attribute)
             if job is not None:
                 try:

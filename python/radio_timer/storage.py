@@ -19,6 +19,7 @@ class Preferences:
     station: str = DEFAULT_STATION
     segments: list[Segment] = field(default_factory=default_segments)
     programs: list[Program] = field(default_factory=list)
+    programs_synced_at: str = ""  # fecha ISO de la última sincronización con la web, vacía si nunca
     alert_enabled: bool = True
     sound_enabled: bool = False
 
@@ -27,6 +28,7 @@ class Preferences:
             "station": self.station,
             "segments": [segment.to_dict() for segment in self.segments],
             "programs": [program.to_dict() for program in self.programs],
+            "programsSyncedAt": self.programs_synced_at,
             "alertEnabled": self.alert_enabled,
             "soundEnabled": self.sound_enabled,
         }
@@ -53,6 +55,8 @@ class Preferences:
                     prefs.programs.append(Program.from_dict(item))
                 except ValueError:
                     pass  # un programa dañado no borra el resto de la parrilla
+        if isinstance(data.get("programsSyncedAt"), str):
+            prefs.programs_synced_at = data["programsSyncedAt"]
         if isinstance(data.get("alertEnabled"), bool):
             prefs.alert_enabled = data["alertEnabled"]
         if isinstance(data.get("soundEnabled"), bool):
