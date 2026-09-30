@@ -11,3 +11,9 @@ Thumbs.db
 !.vscode/extensions.json
 .idea
 *.log
+
+# Paquetes generados por tools/make_release.py
+dist/
+
+# Archivos personales (no forman parte de la app)
+ref/Fluffy/

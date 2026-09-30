@@ -309,8 +309,12 @@ class AppSmokeTests(unittest.TestCase):
     def test_version_manager_check_install_and_restart(self):
         app = self.app
         self.assertEqual(app.footer_version.cget("text"), f"v{radio_timer_version}")
+        self.assertEqual(app.update_url, updates.DEFAULT_UPDATE_URL)  # el repo oficial, sin configurar nada
         dialog = app.open_versions()
         self.root.update_idletasks()
+        self.assertIn("Comprobar ahora", dialog.status_label.cget("text"))
+        app.update_url = ""
+        dialog.refresh()
         self.assertIn("Configura la fuente", dialog.status_label.cget("text"))
 
         releases = self._fake_releases()
@@ -355,6 +359,35 @@ class AppSmokeTests(unittest.TestCase):
         self.assertEqual(load_preferences(self.prefs_path).last_update_check, "")
         self.assertEqual(app.log.entries[0].title, "Actualización fallida")
 
+    def test_channel_filters_what_is_offered(self):
+        app = self.app
+        releases = [
+            updates.Release(version="9.9.1-dev.3", date="2026-09-29", title="Desarrollo #3",
+                            file="radio-timer-9.9.1-dev.3.zip", sha256="0" * 64, prerelease=True),
+            updates.Release(version="9.9.0", date="2026-09-28", title="Estable",
+                            file="radio-timer-9.9.0.zip", sha256="1" * 64),
+        ]
+        self.assertEqual(app.update_channel, "stable")
+        dialog = app.open_versions()
+        app.check_updates(manual=True, fetch=lambda: releases)
+        self._wait_for_update_work()
+        self.assertEqual([r.version for r in app.available_releases], ["9.9.0"])
+        self.assertEqual(app.update_available.version, "9.9.0")
+
+        dialog.channel_var.set("Desarrollo — también cada cambio del código")   # como en el menú
+        self.assertEqual(app.update_channel, "dev")
+        self.assertEqual([r.version for r in app.available_releases], ["9.9.1-dev.3", "9.9.0"])
+        self.assertEqual(app.update_available.version, "9.9.1-dev.3")
+        self.assertIn("9.9.1-dev.3 disponible", app.footer_version.cget("text"))
+        texts = self._all_label_texts(dialog.releases_frame)
+        self.assertTrue(any(text.startswith("DESARROLLO") for text in texts))
+        self.assertEqual(load_preferences(self.prefs_path).update_channel, "dev")
+
+        app.set_update_channel("stable")
+        self.assertEqual(app.update_available.version, "9.9.0")
+        app.set_update_channel("otro")   # desconocido: se ignora
+        self.assertEqual(app.update_channel, "stable")
+
     def test_update_mode_and_url_persist(self):
         app = self.app
         self.assertEqual(app.update_mode, "weekly")
@@ -364,11 +397,15 @@ class AppSmokeTests(unittest.TestCase):
         stored = load_preferences(self.prefs_path)
         self.assertEqual(stored.update_mode, "daily")
         self.assertEqual(stored.update_url, "D:/actualizaciones")
+        app.set_update_url("   ")   # vaciar el campo = volver al repositorio oficial, ya en esta sesión
+        self.assertEqual(app.update_url, updates.DEFAULT_UPDATE_URL)
+        self.assertEqual(load_preferences(self.prefs_path).update_url, updates.DEFAULT_UPDATE_URL)
 
     def test_auto_tick_respects_cadence(self):
         app = self.app
         calls = []
         app.check_updates = lambda **kwargs: calls.append(True)
+        app.update_url = ""
         app._auto_update_tick()               # sin fuente configurada: no comprueba
         app.update_url = "D:/actualizaciones"
         app.update_mode = "manual"

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .model import Program, Segment, default_segments
-from .updates import CHECK_MODES
+from .updates import CHANNELS, CHECK_MODES, DEFAULT_UPDATE_URL
 
 APP_FOLDER = "RadioTimer"
 FILE_NAME = "prefs.json"
@@ -24,8 +24,9 @@ class Preferences:
     alert_enabled: bool = True
     sound_enabled: bool = False
     update_mode: str = "weekly"       # manual | daily | weekly
-    update_url: str = ""              # URL o carpeta con updates.json; vacía = sin fuente configurada
+    update_url: str = DEFAULT_UPDATE_URL  # repo de GitHub, URL https o carpeta con updates.json
     last_update_check: str = ""       # fecha ISO de la última comprobación, vacía si nunca
+    update_channel: str = "stable"    # stable (cabina) | dev (también compilaciones de desarrollo)
 
     def to_dict(self) -> dict:
         return {
@@ -36,8 +37,10 @@ class Preferences:
             "alertEnabled": self.alert_enabled,
             "soundEnabled": self.sound_enabled,
             "updateMode": self.update_mode,
-            "updateUrl": self.update_url,
+            # Vacía = repositorio oficial; así un cambio de DEFAULT_UPDATE_URL llega a todas las copias.
+            "updateUrl": "" if self.update_url == DEFAULT_UPDATE_URL else self.update_url,
             "lastUpdateCheck": self.last_update_check,
+            "updateChannel": self.update_channel,
         }
 
     @classmethod
@@ -70,10 +73,12 @@ class Preferences:
             prefs.sound_enabled = data["soundEnabled"]
         if data.get("updateMode") in CHECK_MODES:
             prefs.update_mode = data["updateMode"]
-        if isinstance(data.get("updateUrl"), str):
-            prefs.update_url = data["updateUrl"].strip()
+        if isinstance(data.get("updateUrl"), str) and data["updateUrl"].strip():
+            prefs.update_url = data["updateUrl"].strip()  # vacía: se queda el repositorio oficial
         if isinstance(data.get("lastUpdateCheck"), str):
             prefs.last_update_check = data["lastUpdateCheck"]
+        if data.get("updateChannel") in CHANNELS:
+            prefs.update_channel = data["updateChannel"]
         return prefs
 
 

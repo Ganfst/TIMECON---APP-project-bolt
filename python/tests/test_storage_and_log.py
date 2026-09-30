@@ -41,6 +41,17 @@ class StorageTests(unittest.TestCase):
         self.assertEqual([p.title for p in load_preferences(self.path).programs],
                          ["Buenos Días Luz", "Sábado de Gloria"])
 
+    def test_default_update_source_is_not_stored_literally(self):
+        from radio_timer.updates import DEFAULT_UPDATE_URL
+        prefs = Preferences()
+        self.assertEqual(prefs.update_url, DEFAULT_UPDATE_URL)
+        self.assertEqual(prefs.to_dict()["updateUrl"], "")        # vacía = repo oficial
+        save_preferences(prefs, self.path)
+        self.assertEqual(load_preferences(self.path).update_url, DEFAULT_UPDATE_URL)
+        prefs.update_url = "D:/actualizaciones"
+        save_preferences(prefs, self.path)
+        self.assertEqual(load_preferences(self.path).update_url, "D:/actualizaciones")
+
     def test_old_file_without_programs(self):
         self.path.parent.mkdir(parents=True)
         self.path.write_text(json.dumps({"station": "Radio X"}), encoding="utf-8")

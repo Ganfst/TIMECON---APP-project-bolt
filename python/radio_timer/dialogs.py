@@ -477,6 +477,8 @@ class HistoryDialog(_Dialog):
         self.text.configure(state="disabled")
         self.export_button.configure(state="normal" if entries else "disabled")
 UPDATE_MODE_OPTIONS = {label: mode for mode, label in updates.CHECK_MODE_NAMES.items()}
+CHANNEL_OPTIONS = {"Estable — versiones publicadas": "stable",
+                   "Desarrollo — también cada cambio del código": "dev"}
 NOTE_COLORS = {"Nuevo": theme.GREEN, "Arreglado": theme.AMBER, "Cambiado": theme.MUTED, "Seguridad": theme.DANGER}
 
 
@@ -511,13 +513,26 @@ class VersionsDialog(_Dialog):
                             "y avisa en la esquina inferior derecha; nunca instala sin que se lo pidas.",
                       font=fonts["small"], fg=theme.MUTED, wraplength=P(440), justify="left").pack(fill="x", pady=(P(6), 0))
 
+        # Canal
+        self._caption(body, "CANAL", (P(16), 0))
+        channel_label = next(label for label, key in CHANNEL_OPTIONS.items() if key == app.update_channel)
+        self.channel_var = tk.StringVar(value=channel_label)
+        widgets.option_menu(body, self.channel_var, list(CHANNEL_OPTIONS), font=fonts["body"]).pack(
+            fill="x", pady=(P(8), 0))
+        self.channel_var.trace_add("write",
+                                   lambda *_args: app.set_update_channel(CHANNEL_OPTIONS[self.channel_var.get()]))
+        widgets.label(body, "La PC de cabina va en Estable. Desarrollo sirve para probar cada cambio "
+                            "antes de publicarlo como versión.",
+                      font=fonts["small"], fg=theme.MUTED, wraplength=P(440), justify="left").pack(fill="x", pady=(P(6), 0))
+
         # Fuente
         self._caption(body, "FUENTE DE ACTUALIZACIONES", (P(16), 0))
         self.url_var = tk.StringVar(value=app.update_url)
         widgets.entry(body, self.url_var, font=fonts["field"]).pack(fill="x", pady=(P(8), 0))
         self.url_var.trace_add("write", lambda *_args: app.set_update_url(self.url_var.get()))
-        widgets.label(body, "URL o carpeta (red o USB) con updates.json y el ZIP de cada versión. "
-                            "Se publica con tools/make_release.py.",
+        widgets.label(body, "Enlace del repositorio de GitHub (versiones = GitHub Releases), o una URL "
+                            "https o carpeta (red o USB) con updates.json y el ZIP de cada versión. "
+                            "Vacío = repositorio oficial.",
                       font=fonts["small"], fg=theme.DIM, wraplength=P(440), justify="left").pack(fill="x", pady=(P(4), 0))
 
         buttons = tk.Frame(body, bg=theme.PANEL_DARK)
@@ -610,6 +625,7 @@ class VersionsDialog(_Dialog):
                            kind="primary" if newer else "default", padx=P(12), pady=P(6),
                            state="disabled" if app.update_busy else "normal").pack(side="right")
         meta = " · ".join(part for part in (
+            "DESARROLLO" if release.prerelease else "",
             release.date, updates.format_size(release.size), "instalada actualmente" if current else "",
         ) if part)
         if meta:

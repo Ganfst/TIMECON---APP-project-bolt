@@ -64,14 +64,20 @@ El contador **no se inicia manualmente ni decrementa por sí solo**: calcula el 
 - Botón **"Reiniciar al inicio"** para reprogramar toda la secuencia desde esa hora (único control manual).
 - Nombre de emisora editable (hasta 40 caracteres) e interruptores de **alerta de cambio** (parpadeo) y **sonido de señal** (tono breve al cambiar de bloque).
 - **Gestor de versiones** (Configuración → "Versiones y actualizaciones"): comprobación de
-  actualizaciones manual, diaria o semanal contra una fuente configurable (URL https o carpeta con
-  `updates.json` y el ZIP de cada versión), lista de todas las versiones publicadas con sus notas
+  actualizaciones manual, diaria o semanal contra una fuente configurable —por defecto los GitHub
+  Releases del repositorio del proyecto; también una URL https o carpeta con `updates.json` y el ZIP
+  de cada versión—, lista de todas las versiones publicadas con sus notas
   (nuevo / arreglado / cambiado / seguridad) y la opción de instalar cualquiera —actualizar,
   reinstalar o volver a una anterior— sin reinstalar la aplicación. La descarga se verifica con
   SHA-256, lo reemplazado queda respaldado en `%APPDATA%\RadioTimer\backups\` y el cambio se
   completa al reiniciar (botón en el mismo panel). Cuando hay versión nueva, el número de versión
   del pie avisa en verde; nunca se instala nada solo. Especificación reutilizable en
-  [gestor-de-versiones.md](gestor-de-versiones.md); publicación con `python/tools/make_release.py`.
+  [gestor-de-versiones.md](gestor-de-versiones.md). Dos canales: **Estable** (la PC de cabina,
+  solo versiones publicadas) y **Desarrollo** (además, una compilación por cada cambio del código).
+  Publicación con integración y entrega continuas (`.github/workflows/integracion-y-entrega.yml`):
+  cada push corre las pruebas; un push a main con `__version__` nuevo y su sección en
+  [CHANGELOG.md](CHANGELOG.md) publica la versión estable; cualquier otro push a main publica una
+  compilación de desarrollo con los commits como notas.
 - Panel de historial con registro real de actividad (entradas a bloque, reinicios, pánico, cambios de configuración) y exportación a CSV compatible con Excel.
 - Emisora, secciones, parrilla de programas e interruptores se guardan en `%APPDATA%\RadioTimer\prefs.json`; la hora de inicio vuelve a la hora en punto actual en cada apertura.
 
@@ -97,6 +103,7 @@ El contador **no se inicia manualmente ni decrementa por sí solo**: calcula el 
 | 7 | Sep 25 | Revisión contra este documento y eliminación de la versión web (HTML, TypeScript, Node). Textos al tamaño de lectura a distancia; reloj 64–110 px y 160 px en pantalla completa; fecha/hora dentro de 20–32 y 40–68 px. Halo pulsante en la alerta. Interruptores reales. Desplazamiento en paneles y área central para que nada se corte. Apilado en ventanas angostas y ventana maximizada al abrir. Corregido: "Cadena total" sumaba tiempo de espera y los contadores independientes bajaban antes de su turno. Corregido: el texto de ayuda del campo de nombre se agregaba como sección. Nombres con largo máximo. Lanzador con doble clic. 49 pruebas automáticas. |
 | 8 | Sep 26 | Revisión de `ref/timecon.exe` (timer original por minuto de la hora, se repite cada hora). Parrilla semanal: título del programa de cada hora sobre el reloj, distinto para cada día, cargado por rangos, con copia entre días y programa siguiente. La secuencia se reinicia sola en cada hora en punto. Minutos editables por sección y aviso si la secuencia pasa de 60 min. El centro del anillo muestra el tiempo en cadena (no se reinicia entre secciones en cadena); la alerta de 10 s acompaña a ese número. Bloques de la hora: EN AIRE 50 + CIERRE 5 en cadena y CORTE Y PROMOCIONES 5 (sin PROMOS aparte). Botón "Sincronizar desde la web" con la programación de radioluz937fm.com; programas con horario en minutos (07:30). 79 pruebas automáticas. |
 | 9 | Sep 27 | v3.2.0. Gestor de versiones: manifiesto `updates.json` con notas por categoría, comprobación manual/diaria/semanal en segundo plano, instalación de cualquier versión con verificación SHA-256, respaldo y reinicio; aviso pasivo en el pie; publicación con `tools/make_release.py`; especificación reutilizable en `gestor-de-versiones.md`. Fuente remota solo https, descargas con tope de tamaño e instalación por renombres atómicos con reversión probada. 113 pruebas automáticas. |
+| 10 | Sep 27 | v3.3.0. Actualizaciones desde GitHub: la fuente por defecto es el repositorio (GitHub Releases, SHA-256 del `digest` de GitHub); `CHANGELOG.md` como origen único de las notas; integración y entrega continuas (pruebas en cada push; versión estable al subir `__version__`, sin etiquetar a mano; compilación de desarrollo en los demás pushes a main); canales Estable/Desarrollo; semver con pre-releases; `updates.json` adjunto como puente para copias en 3.2.0. 133 pruebas automáticas. |
 
 ## Stack técnico
 

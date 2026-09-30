@@ -1,0 +1,109 @@
+# Integración y entrega continuas de Radio Timer.
+#
+# En cada push y pull request: corren las pruebas.
+# En cada push a main que pase las pruebas, GitHub publica solo:
+#   - Versión ESTABLE, si __version__ (python/radio_timer/__init__.py) cambió y aún no existe su
+#     etiqueta: crea la etiqueta vX.Y.Z y el release con título y notas de CHANGELOG.md
+#     (sin la sección de la versión, falla y no publica).
+#   - Compilación de DESARROLLO, si la versión no cambió: pre-release X.Y.(Z+1)-dev.N con los
+#     títulos de los commits como notas. Solo la ven las apps en el canal Desarrollo.
+#     Se conservan las 5 más recientes.
+#
+# Para sacar una versión estable: sube __version__, escribe su sección en CHANGELOG.md, commit y push.
+name: Integración y entrega continuas
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # crear etiquetas y releases
+
+concurrency:
+  group: entrega-${{ github.ref }}
+  cancel-in-progress: false   # nunca cortar una publicación a medias
+
+jobs:
+  pruebas:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: python
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pruebas
+        run: python -m unittest discover -s tests -t . -v
+
+  publicar:
+    needs: pruebas
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: python
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # historial y etiquetas: para saber si la versión ya existe y leer los commits
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ¿Versión nueva o compilación de desarrollo?
+        id: tipo
+        run: |
+          VERSION=$(python -c "import radio_timer; print(radio_timer.__version__)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "estable=no" >> "$GITHUB_OUTPUT"
+            echo "v$VERSION ya está publicada: se publica una compilación de desarrollo."
+          else
+            echo "estable=si" >> "$GITHUB_OUTPUT"
+            echo "v$VERSION no existe todavía: se publica como versión estable."
+          fi
+
+      - name: Publicar versión estable
+        if: steps.tipo.outputs.estable == 'si'
+        run: |
+          VERSION="${{ steps.tipo.outputs.version }}"
+          python tools/make_release.py --out dist --exigir-changelog
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "v$VERSION" "dist/radio-timer-$VERSION.zip" "dist/updates.json" \
+            --target "$GITHUB_SHA" \
+            --title "$(cat "dist/titulo-v$VERSION.txt")" \
+            --notes-file "dist/notas-v$VERSION.md" $PRERELEASE
+
+      - name: Publicar compilación de desarrollo
+        if: steps.tipo.outputs.estable == 'no'
+        run: |
+          BEFORE="${{ github.event.before }}"
+          mkdir -p dist
+          if git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            git log --format=%s "$BEFORE..$GITHUB_SHA" > dist/commits.txt
+          else
+            git log --format=%s -1 "$GITHUB_SHA" > dist/commits.txt   # primer push o push forzado
+          fi
+          python tools/make_release.py --out dist --dev "$GITHUB_RUN_NUMBER" --commits dist/commits.txt
+          DEV=$(cat dist/version.txt)
+          gh release create "v$DEV" "dist/radio-timer-$DEV.zip" \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "$(cat "dist/titulo-v$DEV.txt")" \
+            --notes-file "dist/notas-v$DEV.md"
+
+      - name: Limpiar compilaciones de desarrollo viejas
+        if: steps.tipo.outputs.estable == 'no'
+        run: |
+          gh release list --limit 100 --json tagName,isPrerelease \
+            --jq '.[] | select(.isPrerelease) | .tagName' \
+            | { grep -- '-dev\.' || true; } | tail -n +6 \
+            | while read -r TAG; do gh release delete "$TAG" --yes --cleanup-tag; done

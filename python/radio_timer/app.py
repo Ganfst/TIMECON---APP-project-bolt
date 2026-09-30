@@ -119,7 +119,9 @@ class RadioTimerApp:
         self.update_mode = prefs.update_mode
         self.update_url = prefs.update_url
         self.last_update_check = prefs.last_update_check
-        self.available_releases: list[updates.Release] = []
+        self.update_channel = prefs.update_channel
+        self._fetched_releases: list[updates.Release] = []   # todo lo publicado, sin filtrar
+        self.available_releases: list[updates.Release] = []  # lo que ve el canal elegido
         self.update_available: updates.Release | None = None
         self.update_installed_version: str | None = None
         self.update_busy = False
@@ -1413,8 +1415,33 @@ class RadioTimerApp:
             self.save_preferences()
         return self.update_mode
 
+    def set_update_channel(self, channel: str) -> str:
+        """Estable o Desarrollo. Refiltra lo ya descargado sin volver a consultar."""
+        if channel in updates.CHANNELS and channel != self.update_channel:
+            self.update_channel = channel
+            self.log.add("Canal de actualizaciones", updates.CHANNEL_NAMES[channel], "Versiones", at=self.now)
+            self.save_preferences()
+            if self._fetched_releases:
+                self._apply_channel()
+                self._refresh_update_notice()
+            self._notify_updates()
+        return self.update_channel
+
+    def _apply_channel(self) -> None:
+        """Calcula lo visible según el canal y el aviso de versión nueva."""
+        self.available_releases = updates.for_channel(self._fetched_releases, self.update_channel)
+        newest = updates.first_newer(self.available_releases)
+        self.update_available = newest
+        if newest is not None:
+            self.update_status = f"Nueva versión disponible: v{newest.version}"
+        elif self.available_releases:
+            self.update_status = f"Estás en la última versión (v{__version__})"
+        else:
+            self.update_status = "No hay versiones publicadas en este canal"
+
     def set_update_url(self, url: str) -> None:
-        clean = str(url).strip()
+        """Vacía equivale al repositorio oficial (igual que al volver a abrir la app)."""
+        clean = str(url).strip() or updates.DEFAULT_UPDATE_URL
         if clean != self.update_url:
             self.update_url = clean
             self.save_preferences()
@@ -1482,18 +1509,13 @@ class RadioTimerApp:
             self.update_status = f"No se pudo: {payload}"
             self.log.add("Actualización fallida", str(payload), "Versiones", at=self.now)
         elif kind == "check":
-            self.available_releases = payload
+            self._fetched_releases = payload
             self.last_update_check = self.clock().isoformat(timespec="seconds")
-            newest = updates.first_newer(payload)
-            self.update_available = newest
+            self._apply_channel()
+            newest = self.update_available
             if newest is not None:
-                self.update_status = f"Nueva versión disponible: v{newest.version}"
                 self.log.add(f"Actualización disponible: v{newest.version}",
                              newest.title or newest.date, "Versiones", at=self.now)
-            elif payload:
-                self.update_status = f"Estás en la última versión (v{__version__})"
-            else:
-                self.update_status = "El manifiesto no tiene versiones publicadas"
             self.save_preferences()
         elif kind == "install":
             release = extra["release"]
@@ -1579,7 +1601,7 @@ class RadioTimerApp:
                             programs_synced_at=self.programs_synced_at,
                             alert_enabled=self.alert_enabled, sound_enabled=self.sound_enabled,
                             update_mode=self.update_mode, update_url=self.update_url,
-                            last_update_check=self.last_update_check)
+                            last_update_check=self.last_update_check, update_channel=self.update_channel)
         try:
             save_preferences(prefs, self.prefs_path)
         except OSError as exc:

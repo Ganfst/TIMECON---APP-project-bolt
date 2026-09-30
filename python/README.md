@@ -45,17 +45,44 @@ python run.py --prefs otro.json    # usa otro archivo de preferencias
 - El historial registra entradas a bloque, reinicios, pánico y cambios de configuración, y se exporta a CSV compatible con Excel.
 - Si hay más secciones de las que caben, los paneles muestran una barra de desplazamiento y responden a la rueda del ratón.
 
+## Instalar en la PC de cabina (desde GitHub)
+
+La primera instalación es manual; después se actualiza sola desde la app.
+
+1. Instalar Python 3.10 o superior desde python.org (con la opción «tcl/tk and IDLE» marcada, viene por defecto).
+2. En https://github.com/Ganfst/TIMECON---APP-project-bolt/releases, abrir el release más nuevo y bajar
+   **radio-timer-X.Y.Z.zip** (no el «Source code», que trae todo el repositorio).
+3. Extraerlo en una carpeta fija, por ejemplo `C:\RadioTimer`, y abrir **Abrir Radio Timer.bat**.
+
+La fuente de actualizaciones ya viene configurada con ese repositorio. Una copia en la versión 3.2.0
+no sabe leer GitHub: o se instala la nueva a mano una vez, o se pone como fuente
+`https://github.com/Ganfst/TIMECON---APP-project-bolt/releases/latest/download/updates.json`.
+
 ## Actualizaciones
 
 En Configuración → **Versiones y actualizaciones** se elige la cadencia de comprobación (manual,
-diaria o semanal) y la fuente: una URL https o carpeta (red o USB) con `updates.json` y el ZIP de cada
-versión. La lista muestra todas las versiones con sus notas (nuevo / arreglado / cambiado) y
+diaria o semanal) y la fuente. Por defecto es el repositorio de GitHub del proyecto: cada GitHub
+Release es una versión. También sirve una URL https o una carpeta (red o USB) con `updates.json` y el
+ZIP de cada versión. La lista muestra todas las versiones con sus notas (nuevo / arreglado / cambiado) y
 cualquiera se puede instalar sin reinstalar la app; lo anterior queda respaldado en
-`%APPDATA%\RadioTimer\backups\` y el cambio se aplica al reiniciar. Para publicar versiones:
+`%APPDATA%\RadioTimer\backups\` y el cambio se aplica al reiniciar.
 
-```
-python tools/make_release.py --out "D:/actualizaciones" --titulo "..." --nuevo "..." --arreglado "..."
-```
+El **canal** se elige en el mismo panel: **Estable** para la PC de cabina (solo versiones publicadas)
+y **Desarrollo** para probar cada cambio antes de publicarlo.
+
+### Publicar (integración y entrega continuas)
+
+El workflow `.github/workflows/integracion-y-entrega.yml` hace todo en GitHub:
+
+| Evento | Qué pasa |
+|---|---|
+| Push o pull request | Corren las pruebas |
+| Push a `main` con `__version__` nuevo | Si pasan las pruebas: etiqueta `vX.Y.Z` y release **estable** con las notas de `../CHANGELOG.md` |
+| Cualquier otro push a `main` | Si pasan las pruebas: pre-release de **desarrollo** `X.Y.(Z+1)-dev.N` con los commits como notas (quedan las 5 últimas) |
+
+Para sacar una versión estable: subir `__version__` en `radio_timer/__init__.py`, escribir su sección
+en `../CHANGELOG.md`, commit y push. No hace falta crear etiquetas a mano.
+Para una carpeta de red o USB: `python tools/make_release.py --out "D:/actualizaciones"`.
 
 El detalle del diseño (reutilizable en otros proyectos) está en
 [../gestor-de-versiones.md](../gestor-de-versiones.md).
